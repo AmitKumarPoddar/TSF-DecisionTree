@@ -71,3 +71,14 @@ def test_overlapping_selection_detected():
     toluene = next(e for e in entries[6] if e.code == "290230")
     ethylene = next(e for e in entries[6] if e.code == "290121")
     assert overlapping([heading, toluene, ethylene]) == [(heading, toluene)]
+
+
+def test_year_level_named_date_year_is_detected():
+    from datamexico.schema import as_trade_cube, parse_cubes
+    raw = [{"name": "economy_foreign_trade_nat", "measures": [{"name": "Trade Value"}], "dimensions": [
+        {"name": "Date", "type": "time", "hierarchies": [{"name": "Date", "levels": [{"name": "Date Year"}]}]},
+        {"name": "Product", "hierarchies": [{"name": "Product", "levels": [{"name": "HS4"}, {"name": "HS6"}]}]},
+        {"name": "Flow", "hierarchies": [{"name": "Flow", "levels": [{"name": "Flow"}]}]},
+    ]}]
+    tc = as_trade_cube(parse_cubes(raw)[0])
+    assert tc is not None and tc.year.name == "Date Year"

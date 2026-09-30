@@ -131,23 +131,50 @@ def fetch_trade(
 def fetch_coverage(
     client: TesseractClient,
     tc: TradeCube,
-    selected: Sequence[HSEntry],
     measure: str,
     locale: str = "en",
 ) -> dict[int, int]:
-    """Months (or quarters) reported per year, used to flag partial years."""
+    """Months (or quarters) reported per year across the whole cube.
+
+    Measured over all products, not the selected ones: a product that is not
+    traded every month must not make a complete year look partial.
+    """
     if tc.period is None:
         return {}
-    coverage: dict[int, int] = {}
-    for digits, entries in _group_by_level(selected).items():
-        hs_level = tc.hs_levels[digits]
-        rows = client.data(
-            tc.name,
-            [tc.year.param, tc.period.param],
-            [measure],
-            {hs_level.param: [e.member_id for e in entries]},
-            locale,
-        )
-        for year, n in period_coverage(rows, tc.year, tc.period).items():
-            coverage[year] = max(coverage.get(year, 0), n)
-    return coverage
+    rows = client.data(tc.name, [tc.year.param, tc.period.param], [measure], locale=locale)
+    return period_coverage(rows, tc.year, tc.period)
+
+
+def cubes_with(cubes: Sequence[TradeCube], attr: str) -> list[TradeCube]:
+    """Trade cubes having a ``country`` or ``state`` level, best first."""
+    return [c for c in cubes if getattr(c, attr) is not None]
+
+
+def compare_cubes(
+    client: TesseractClient,
+    cubes: Sequence[TradeCube],
+    selected: Sequence[HSEntry],
+    locale: str = "en",
+) -> pd.DataFrame:
+    """Yearly imports and exports of the selection in every detected trade cube.
+
+    Lets the analyst check which cube matches the published national totals.
+    """
+    frames = []
+    for tc in cubes:
+        usable = [e for e in selected if e.digits in tc.hs_levels]
+        if not usable:
+            continue
+        try:
+            flows = flow_map(client, tc, locale)
+            df = fetch_trade(client, tc, usable, tc.value_measure, flows, "hs", locale)
+        except DataMexicoError as exc:
+            frames.append(pd.DataFrame([{"cube": tc.name, "year": None, "flow": f"error: {exc}"[:120], "value": None}]))
+            continue
+        df = df.groupby(["year", "flow"], as_index=False)["value"].sum()
+        df["cube"] = tc.name
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    out = pd.concat(frames, ignore_index=True)
+    return out.pivot_table(index=["cube", "flow"], columns="year", values="value", aggfunc="sum")

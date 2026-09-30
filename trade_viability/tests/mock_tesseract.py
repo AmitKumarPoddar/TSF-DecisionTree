@@ -22,6 +22,9 @@ from urllib.parse import parse_qs, urlparse
 import pandas as pd
 
 CUBE = "economy_foreign_trade_ent"
+NAT_CUBE = "economy_foreign_trade_nat"
+# Share of national trade that the state-level cubes can attribute to a state.
+STATE_SHARE = {CUBE: 0.1, "economy_foreign_trade_mun": 0.05, NAT_CUBE: 1.0}
 
 HS2 = {"101": ("Live animals", "Animales vivos"),
        "527": ("Mineral fuels and oils", "Combustibles minerales"),
@@ -115,6 +118,7 @@ def cube_metadata(dialect: str) -> dict:
         {"name": "inegi_enoe", "dimensions": [dim("Date", "time", ["Year"])], "measures": [measure], "annotations": {}},
         {"name": "economy_foreign_trade_mun", "dimensions": trade_dims, "measures": [measure], "annotations": {}},
         {"name": CUBE, "dimensions": trade_dims, "measures": [measure], "annotations": {}},
+        {"name": NAT_CUBE, "dimensions": trade_dims[:4], "measures": [measure], "annotations": {}},
     ]
     if dialect == "olap":
         return {"name": "mock", "locales": ["en", "es"], "default_locale": "es", "annotations": {}, "cubes": cubes}
@@ -164,7 +168,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _members(self, params):
         level, locale = params["level"], params.get("locale", "es")
-        if params.get("cube") not in (CUBE, "economy_foreign_trade_mun"):
+        if params.get("cube") not in STATE_SHARE:
             return self._send(404, {"error": True, "detail": "cube not found"})
         if level not in LEVELS:
             return self._send(404, {"error": True, "detail": "Unable to find a level with the name provided"})
@@ -178,13 +182,14 @@ class Handler(BaseHTTPRequestHandler):
                                 "members": [{"key": k, "caption": _label(level, k, locale)} for k in keys]})
 
     def _data(self, params):
-        if params.get("cube") not in (CUBE, "economy_foreign_trade_mun"):
+        if params.get("cube") not in STATE_SHARE:
             return self._send(404, {"error": True, "detail": "cube not found"})
         locale = params.get("locale", "es")
         drills = [d for d in params["drilldowns"].split(",") if d]
         measures = [m for m in params["measures"].split(",") if m]
+        cube = params["cube"]
         for d in drills:
-            if d not in LEVELS:
+            if d not in LEVELS or (cube == NAT_CUBE and d == "State"):
                 return self._send(400, {"error": True, "detail": f"unknown level {d}"})
         cuts = {k: v.split(",") for k, v in params.items() if k in LEVELS}
         for item in filter(None, params.get("include", "").split(";")):
@@ -194,6 +199,7 @@ class Handler(BaseHTTPRequestHandler):
         for level, members in cuts.items():
             df = df[df[level].astype(str).isin(members)]
         grouped = df.groupby(drills, as_index=False)[measures].sum()
+        grouped[measures] = grouped[measures] * STATE_SHARE[cube]
         records = []
         for row in grouped.to_dict("records"):
             rec = {}

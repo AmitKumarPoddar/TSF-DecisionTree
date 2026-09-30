@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 
 # Level-name patterns (English and Spanish), matched case-insensitively.
-_YEAR = re.compile(r"^(year|a[nñ]o|anio)$", re.I)
+_YEAR = re.compile(r"^((date|time|fecha|tiempo)\s+)?(year|a[nñ]o|anio)$", re.I)
 _PERIOD = re.compile(r"^(month|quarter|mes|trimestre)$", re.I)
 _FLOW = re.compile(r"^(flow|trade flow|flujo|flujo comercial)$", re.I)
 _COUNTRY = re.compile(r"^(country|pa[ií]s|partner country|origin country)$", re.I)
@@ -19,6 +19,7 @@ _STATE = re.compile(r"^(state|estado|entidad|entidad federativa)$", re.I)
 _HS_DIGITS = re.compile(r"\bHS\s*-?\s*(\d{1,2})\b|\b(\d{1,2})\s*d[ií]git", re.I)
 _TARIFF = re.compile(r"fracci[oó]n|tariff", re.I)
 _VALUE_MEASURE = re.compile(r"trade value|valor comercial|^valor$|^value$", re.I)
+_NATIONAL = re.compile(r"_nat(ional)?\b|nacional|national", re.I)
 _TRADE_CUBE = re.compile(r"foreign_trade|comercio_exterior|trade", re.I)
 
 
@@ -156,7 +157,11 @@ def as_trade_cube(cube: Cube) -> TradeCube | None:
     score += 3 if 6 in hs_levels else 0
     score += 1 if 4 in hs_levels else 0
     score += 2 if country else 0
-    score += 1 if state else 0
+    # National cubes carry the full trade total. State-level cubes only hold
+    # trade Data México could attribute to a state, which can be a small share
+    # (e.g. propylene imports), so they are ranked below a national cube.
+    score += 6 if _NATIONAL.search(cube.name) else 0
+    score -= 2 if state and not _NATIONAL.search(cube.name) else 0
     score += 1 if period else 0
     score += 1 if _VALUE_MEASURE.search(value_measure) else 0
     # Municipal cubes cover less of total trade; legacy/test copies are stale.

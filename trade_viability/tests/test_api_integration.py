@@ -18,16 +18,26 @@ def test_connect_reports_every_failure():
         TesseractClient.connect(["http://127.0.0.1:9/tesseract"], timeout=2)
 
 
-def test_discovers_state_level_trade_cube(mock_api):
+def test_prefers_national_cube_over_state_cube(mock_api):
     cubes = service.trade_cubes(TesseractClient(mock_api))
     best = cubes[0]
-    assert best.name == "economy_foreign_trade_ent"
+    assert best.name == "economy_foreign_trade_nat"
     assert {d: lvl.name for d, lvl in best.hs_levels.items()} == {2: "HS2", 4: "HS4", 6: "HS6"}
     assert best.flow.name == "Flow" and best.year.name == "Year"
-    assert best.country.name == "Country" and best.state.name == "State"
+    assert best.country.name == "Country" and best.state is None
     assert best.period.name == "Quarter"
     assert best.value_measure == "Trade Value"
-    assert "economy_foreign_trade_mun" in [c.name for c in cubes]
+    assert [c.name for c in service.cubes_with(cubes, "state")][0] == "economy_foreign_trade_ent"
+
+
+def test_compare_cubes_shows_state_cube_undercounts(mock_api):
+    client = TesseractClient(mock_api)
+    cubes = service.trade_cubes(client)
+    propene = [e for e in search(service.hs_entries(client, cubes[0], "en"), "2901.22")]
+    table = service.compare_cubes(client, cubes, propene, "en")
+    nat = table.loc[("economy_foreign_trade_nat", "Imports"), 2024]
+    ent = table.loc[("economy_foreign_trade_ent", "Imports"), 2024]
+    assert ent == pytest.approx(nat * 0.1, rel=1e-3)
 
 
 def test_search_and_fetch_toluene(mock_api):
@@ -50,7 +60,9 @@ def test_search_and_fetch_toluene(mock_api):
     totals = by_country.groupby("year")["value"].sum()
     assert totals.round(0).equals(by_hs.groupby("year")["value"].sum().round(0))
 
-    by_state = service.fetch_trade(client, tc, toluene, "Trade Value", flows, "state")
+    state_tc = service.cubes_with(service.trade_cubes(client), "state")[0]
+    by_state = service.fetch_trade(client, state_tc, toluene, "Trade Value",
+                                   service.flow_map(client, state_tc, "en"), "state")
     tamaulipas_imports = by_state[(by_state["state"] == "Tamaulipas") & (by_state["flow"] == IMPORTS)]
     assert tamaulipas_imports.empty
 
@@ -69,8 +81,7 @@ def test_mixed_levels_one_request_per_level(mock_api):
 def test_partial_year_detected(mock_api):
     client = TesseractClient(mock_api)
     tc = service.trade_cubes(client)[0]
-    toluene = search(service.hs_entries(client, tc, "en"), "toluene")
-    coverage = service.fetch_coverage(client, tc, toluene, "Trade Value")
+    coverage = service.fetch_coverage(client, tc, "Trade Value")
     assert coverage[2024] == 4 and coverage[2025] == 2
     assert partial_years_from_coverage(coverage) == [2025]
 

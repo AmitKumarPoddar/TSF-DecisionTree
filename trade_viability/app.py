@@ -71,10 +71,18 @@ def load_trade(base_url: str, cube: str, keys: tuple, measure: str, breakdown: s
 
 
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
-def load_coverage(base_url: str, cube: str, keys: tuple, measure: str, locale: str):
+def load_coverage(base_url: str, cube: str, measure: str, locale: str):
     client = TesseractClient(base_url)
-    cov = service.fetch_coverage(client, get_cube(base_url, cube), _entries_from_keys(keys), measure, locale)
+    cov = service.fetch_coverage(client, get_cube(base_url, cube), measure, locale)
     return cov, client.log.urls
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def load_comparison(base_url: str, keys: tuple, labels: tuple, locale: str):
+    client = TesseractClient(base_url)
+    cubes, _ = load_cubes(base_url)
+    entries = [HSEntry(digits=d, member_id=m, code="", label="") for d, m in keys]
+    return service.compare_cubes(client, cubes, entries, locale)
 
 
 def log_urls(urls) -> None:
@@ -140,8 +148,19 @@ with st.sidebar:
     default_unit = "USD" if measure == tc.value_measure else ""
     unit = st.text_input("Unit of the measure", value=default_unit,
                          help="Data México trade values are reported in US dollars.")
+    country_cubes = [c.name for c in service.cubes_with(cubes, "country")]
+    state_cubes = [c.name for c in service.cubes_with(cubes, "state")]
+    country_cube = st.selectbox(
+        "Cube for country breakdown", country_cubes or ["(none)"],
+        index=country_cubes.index(cube_name) if cube_name in country_cubes else 0,
+        help="Partner-country split. Totals may differ from the main cube if this is another cube.")
+    state_cube = st.selectbox(
+        "Cube for state breakdown", state_cubes or ["(none)"], index=0,
+        help="Mexican-state split. State-level cubes only include trade Data México could "
+        "attribute to a state, so they can sum to less than the national total.")
     with st.expander("Cube structure"):
-        st.caption(tc.describe())
+        for c in cubes:
+            st.caption(("**→** " if c.name == cube_name else "") + c.describe())
     with st.expander("Diagnostics"):
         st.caption("Raw API responses, useful if labels or flows look wrong.")
         if st.button("Run API diagnostics"):
@@ -270,13 +289,19 @@ try:
         by_hs, urls = load_trade(base_url, cube_name, keys, measure, "hs", locale)
         log_urls(urls)
         by_country = by_state = None
-        if tc.country:
-            by_country, urls = load_trade(base_url, cube_name, keys, measure, "country", locale)
+        if country_cubes:
+            cc = get_cube(base_url, country_cube)
+            by_country, urls = load_trade(base_url, country_cube, keys,
+                                          measure if country_cube == cube_name else cc.value_measure,
+                                          "country", locale)
             log_urls(urls)
-        if tc.state:
-            by_state, urls = load_trade(base_url, cube_name, keys, measure, "state", locale)
+        if state_cubes:
+            sc = get_cube(base_url, state_cube)
+            by_state, urls = load_trade(base_url, state_cube, keys,
+                                        measure if state_cube == cube_name else sc.value_measure,
+                                        "state", locale)
             log_urls(urls)
-        coverage, urls = load_coverage(base_url, cube_name, keys, measure, locale)
+        coverage, urls = load_coverage(base_url, cube_name, measure, locale)
         log_urls(urls)
 except DataMexicoError as exc:
     st.error(f"Data request failed: {exc}")
@@ -380,8 +405,9 @@ with tabs[3]:
     if by_state is None or by_state.empty:
         st.info("This cube has no Mexican-state breakdown.")
     else:
-        st.caption("State attribution as reported by Data México; see its methodology for how "
-                   "trade is assigned to states.")
+        st.caption(f"Source cube: `{state_cube}`. State-level data only include trade Data México "
+                   "could attribute to a state, so totals can be lower than the national figures "
+                   "in the other tabs.")
         flow = st.radio("Flow", [IMPORTS, EXPORTS], horizontal=True, key="state_flow")
         pick_years = complete or years
         year = st.select_slider("Year", options=pick_years, value=pick_years[-1], key="state_year")
@@ -459,6 +485,17 @@ with tabs[5]:
                               "description": e.label, "parent_heading": e.parent_label} for e in basket.values()])
     st.markdown("**Selected codes**")
     st.dataframe(codes_df, hide_index=True)
+
+    st.markdown("**Check totals across cubes**")
+    st.caption("Imports and exports of the selected codes in every detected trade cube. "
+               "Use the cube whose totals match Data México's published figures.")
+    if st.button("Compare cubes"):
+        with st.spinner("Querying every trade cube…"):
+            comparison = load_comparison(base_url, keys, tuple(entry_name(e) for e in basket.values()), locale)
+        if comparison.empty:
+            st.info("No comparable cubes.")
+        else:
+            st.dataframe(comparison.style.format("{:,.0f}", na_rep="–"))
 
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
