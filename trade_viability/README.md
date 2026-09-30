@@ -72,6 +72,7 @@ browser.
   *apparent consumption = production + imports − exports* and
   *import dependence = imports ÷ apparent consumption*, the method used in
   the approach document's worked example.
+- **Years shown.** Only 2015 onwards; earlier years and placeholder years (e.g. 0) are dropped everywhere.
 - **Partial years.** The current year, or any year with fewer reported months
   or quarters, is hatched and labelled *YTD* in charts. It is excluded from
   growth rates and screening.

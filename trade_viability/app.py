@@ -23,6 +23,8 @@ from datamexico.hs import HSEntry, format_code, overlapping, search
 st.set_page_config(page_title="Mexico Trade Explorer", page_icon="📦", layout="wide")
 
 STATUS_ICON = {PASS: "✅ Pass", WATCH: "⚠️ Watch", FAIL: "❌ Fail", MANUAL: "✍️ Needs input", NA: "➖ n/a"}
+# Years before this are not relevant to the study and are never shown or used.
+MIN_YEAR = 2015
 HS_LABEL = {2: "HS2 (chapter)", 4: "HS4 (heading)", 6: "HS6 (subheading)", 8: "HS8 (tariff line)", 10: "HS10"}
 
 
@@ -307,8 +309,17 @@ except DataMexicoError as exc:
     st.error(f"Data request failed: {exc}")
     st.stop()
 
+
+def recent(df):
+    """Keep rows from MIN_YEAR on (also drops placeholder years such as 0)."""
+    return df if df is None or df.empty else df[df["year"] >= MIN_YEAR].reset_index(drop=True)
+
+
+by_hs, by_country, by_state = recent(by_hs), recent(by_country), recent(by_state)
+coverage = {y: n for y, n in coverage.items() if y >= MIN_YEAR}
+
 if by_hs.empty:
-    st.warning("Data México returned no trade records for the selected codes.")
+    st.warning(f"Data México returned no trade records for the selected codes from {MIN_YEAR} onwards.")
     st.stop()
 
 by_hs["product"] = [
@@ -324,6 +335,7 @@ complete = full_years(summary, partial)
 years = list(summary.index)
 
 st.subheader("3 · Mexico's trade in the selected codes")
+st.caption(f"Data from {MIN_YEAR} onwards.")
 if partial:
     months = {y: coverage.get(y) for y in partial}
     detail = ", ".join(f"{y}" + (f" ({n} of {max(coverage.values())} periods)" if n else "") for y, n in months.items())
@@ -495,6 +507,7 @@ with tabs[5]:
         if comparison.empty:
             st.info("No comparable cubes.")
         else:
+            comparison = comparison[[c for c in comparison.columns if pd.notna(c) and c >= MIN_YEAR]]
             st.dataframe(comparison.style.format("{:,.0f}", na_rep="–"))
 
     buffer = io.BytesIO()
