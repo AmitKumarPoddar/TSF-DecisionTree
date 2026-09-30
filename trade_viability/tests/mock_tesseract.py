@@ -90,7 +90,7 @@ FACTS = build_facts()
 
 def cube_metadata(dialect: str) -> dict:
     def level(name, depth):
-        if dialect == "rs":
+        if dialect in ("rs", "bare"):
             return {"name": name, "unique_name": None, "properties": None, "annotations": {}}
         return {"name": name, "caption": name, "depth": depth, "count": 0, "annotations": {}, "properties": []}
 
@@ -104,7 +104,7 @@ def cube_metadata(dialect: str) -> dict:
         return body
 
     measure = ({"name": "Trade Value", "aggregator": {"name": "sum"}, "annotations": {}}
-               if dialect == "rs" else {"name": "Trade Value", "caption": "Trade Value", "aggregator": "sum",
+               if dialect in ("rs", "bare") else {"name": "Trade Value", "caption": "Trade Value", "aggregator": "sum",
                                         "type": "float64", "annotations": {}, "attached": []})
     trade_dims = [dim("Date", "time", ["Year", "Quarter", "Month"]),
                   dim("Product", "standard", ["Chapter", "HS2", "HS4", "HS6"]),
@@ -153,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/cubes":
                 return self._send(200, cube_metadata(self.dialect))
             if path in ("/members", "/members.jsonrecords"):
-                if self.dialect == "rs" and path == "/members":
+                if self.dialect in ("rs", "bare") and path == "/members":
                     return self._send(400, "use members.jsonrecords")
                 return self._members(params)
             if path == "/data.jsonrecords":
@@ -169,7 +169,9 @@ class Handler(BaseHTTPRequestHandler):
         if level not in LEVELS:
             return self._send(404, {"error": True, "detail": "Unable to find a level with the name provided"})
         keys = LEVELS[level][1] or sorted(FACTS[level].unique())
-        if self.dialect == "rs":
+        if self.dialect == "bare":  # members without captions, as seen on the live API
+            return self._send(200, {"data": [{"ID": int(k) if str(k).isdigit() else k} for k in keys]})
+        if self.dialect in ("rs",):
             return self._send(200, {"data": [{"ID": k, "Label": _label(level, k, locale)} for k in keys]})
         return self._send(200, {"name": level, "caption": level, "depth": 1, "annotations": {},
                                 "properties": [], "dtypes": {},
@@ -201,12 +203,12 @@ class Handler(BaseHTTPRequestHandler):
                     rec["Year"] = int(key)
                     continue
                 # tesseract-rs returns integer keys for integer columns.
-                rec[f"{d} ID"] = int(key) if self.dialect == "rs" and d in ("Flow", "State") else key
+                rec[f"{d} ID"] = int(key) if self.dialect in ("rs", "bare") and d in ("Flow", "State") else key
                 rec[d] = _label(d, key, locale)
             for m in measures:
                 rec[m] = round(float(row[m]), 2)
             records.append(rec)
-        if self.dialect == "rs":
+        if self.dialect in ("rs", "bare"):
             return self._send(200, {"data": records, "source": []})
         columns = list(records[0].keys()) if records else []
         return self._send(200, {"columns": columns, "data": records,
@@ -224,7 +226,7 @@ def serve(port: int = 0, dialect: str = "rs") -> tuple[ThreadingHTTPServer, str]
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--dialect", choices=("rs", "olap"), default="rs")
+    parser.add_argument("--dialect", choices=("rs", "olap", "bare"), default="rs")
     args = parser.parse_args()
     server, base = serve(args.port, args.dialect)
     print(f"Mock Tesseract ({args.dialect}, SYNTHETIC DATA) at {base}")

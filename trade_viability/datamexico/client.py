@@ -93,6 +93,7 @@ class TesseractClient:
         self.session.headers.setdefault("User-Agent", USER_AGENT)
         self.session.headers.setdefault("Accept", "application/json")
         self.log = log or QueryLog()
+        self.samples: dict[str, str] = {}  # url -> start of raw response, for diagnostics
 
     # ------------------------------------------------------------------ #
     # Connection
@@ -140,6 +141,7 @@ class TesseractClient:
             raise DataMexicoError(
                 f"HTTP {response.status_code} for {url}: {_error_detail(response)}"
             )
+        self.samples[url] = response.text[:1500]
         try:
             return response.json()
         except ValueError as exc:
@@ -208,6 +210,25 @@ class TesseractClient:
         return rows
 
 
+    def labels_from_data(
+        self, cube: str, level: str, measure: str, locale: str | None = None
+    ) -> list[Member]:
+        """Member IDs and labels taken from an aggregate query drilled by ``level``.
+
+        Used when the members endpoint returns IDs without captions: the data
+        endpoint always returns the level's name column next to its ID.
+        """
+        rows = self.data(cube, [level], [measure], locale=locale)
+        members: list[Member] = []
+        for row in rows:
+            key = row.get(f"{level} ID", row.get(level))
+            if key is None:
+                continue
+            label = row.get(level, key)
+            members.append(Member(id=str(key), label=str(label)))
+        return members
+
+
 def parse_members(payload) -> list[Member] | None:
     """Normalise a members response from either Tesseract generation."""
     if isinstance(payload, dict):
@@ -229,7 +250,15 @@ def parse_members(payload) -> list[Member] | None:
         key = _first(row, ("ID", "key", "Key", "id"))
         if key is None:
             continue
-        label = _first(row, ("Label", "caption", "Caption", "label", "name"))
+        label = _first(row, ("Label", "caption", "Caption", "label", "name", "Name"))
+        if label is None:
+            # Unknown shape: take the first other text field as the label.
+            label = next(
+                (v for k, v in row.items()
+                 if isinstance(v, str) and v.strip() and v != str(key)
+                 and k not in ("ID", "key", "Key", "id")),
+                None,
+            )
         members.append(Member(id=str(key), label=str(label if label is not None else key)))
     return members
 

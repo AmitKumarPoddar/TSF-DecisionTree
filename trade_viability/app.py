@@ -142,6 +142,26 @@ with st.sidebar:
                          help="Data México trade values are reported in US dollars.")
     with st.expander("Cube structure"):
         st.caption(tc.describe())
+    with st.expander("Diagnostics"):
+        st.caption("Raw API responses, useful if labels or flows look wrong.")
+        if st.button("Run API diagnostics"):
+            diag = TesseractClient(base_url)
+            probes = [
+                ("members.jsonrecords", {"cube": cube_name, "level": tc.flow.param, "locale": locale}),
+                ("members", {"cube": cube_name, "level": tc.flow.param, "locale": locale}),
+                ("data.jsonrecords", {"cube": cube_name, "drilldowns": tc.flow.param,
+                                      "measures": tc.value_measure, "locale": locale}),
+                ("members.jsonrecords", {"cube": cube_name, "level": max(tc.hs_levels.items())[1].param,
+                                         "locale": locale}),
+            ]
+            for path, params in probes:
+                url = diag.url_for(path, params)
+                try:
+                    diag.get_json(path, params)
+                    body = diag.samples.get(url, "")
+                except DataMexicoError as exc:
+                    body = f"ERROR: {exc}"
+                st.code(f"{url}\n{body[:800]}", language=None)
 
     st.header("Screening thresholds")
     thresholds = Thresholds(
