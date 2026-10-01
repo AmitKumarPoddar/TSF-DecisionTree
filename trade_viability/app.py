@@ -17,7 +17,7 @@ from datamexico.analysis import (
     EXPORTS, FAIL, IMPORTS, MANUAL, NA, PASS, WATCH, Thresholds, cagr, concentration, fmt_value,
     full_years, hhi_band, overall_verdict, partial_years_from_coverage, viability_signals, yearly_summary,
 )
-from datamexico.client import ENV_BASE_URL, DataMexicoError, TesseractClient, candidate_base_urls
+from datamexico.client import ENV_BASE_URL, DataMexicoError, DataMexicoUnreachable, TesseractClient, candidate_base_urls
 from datamexico.hs import HSEntry, format_code, overlapping, search
 
 st.set_page_config(page_title="Mexico Trade Explorer", page_icon="📦", layout="wide")
@@ -75,7 +75,7 @@ def load_trade(base_url: str, cube: str, keys: tuple, measure: str, breakdown: s
 @st.cache_data(ttl=6 * 3600, show_spinner=False)
 def load_coverage(base_url: str, cube: str, measure: str, locale: str):
     client = TesseractClient(base_url)
-    cov = service.fetch_coverage(client, get_cube(base_url, cube), measure, locale)
+    cov = service.fetch_coverage(client, get_cube(base_url, cube), measure, locale, MIN_YEAR)
     return cov, client.log.urls
 
 
@@ -305,6 +305,19 @@ try:
             log_urls(urls)
         coverage, urls = load_coverage(base_url, cube_name, measure, locale)
         log_urls(urls)
+except DataMexicoUnreachable as exc:
+    connect.clear()
+    st.error("The Data México server is not responding, so no data could be fetched.")
+    st.markdown(
+        f"- Details: `{exc}`\n"
+        "- This is a network problem between this app and `www.economia.gob.mx`, not a problem with "
+        "the codes you selected. The site may be down or rate-limiting, or it may be blocking this "
+        "app's hosting provider.\n"
+        "- Check whether [Data México](https://www.economia.gob.mx/datamexico/) opens in your browser. "
+        "If it does, try again in a few minutes, or run the app on your own computer "
+        "(`streamlit run app.py`), which connects from your network instead."
+    )
+    st.stop()
 except DataMexicoError as exc:
     st.error(f"Data request failed: {exc}")
     st.stop()

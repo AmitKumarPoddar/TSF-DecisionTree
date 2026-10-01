@@ -8,7 +8,7 @@ from typing import Iterable, Sequence
 import pandas as pd
 
 from .analysis import EXPORTS, IMPORTS, classify_flow, period_coverage, rows_to_frame
-from .client import DataMexicoError, Member, TesseractClient
+from .client import DataMexicoError, DataMexicoUnreachable, Member, TesseractClient
 from .hs import HSEntry, build_entries
 from .schema import Level, TradeCube, find_trade_cubes
 
@@ -133,6 +133,7 @@ def fetch_coverage(
     tc: TradeCube,
     measure: str,
     locale: str = "en",
+    min_year: int = 2015,
 ) -> dict[int, int]:
     """Months (or quarters) reported per year across the whole cube.
 
@@ -141,7 +142,15 @@ def fetch_coverage(
     """
     if tc.period is None:
         return {}
-    rows = client.data(tc.name, [tc.year.param, tc.period.param], [measure], locale=locale)
+    import datetime as _dt
+    years = [str(y) for y in range(min_year, _dt.date.today().year + 1)]
+    try:  # restricting to recent years keeps this whole-cube query light
+        rows = client.data(tc.name, [tc.year.param, tc.period.param], [measure],
+                           {tc.year.param: years}, locale)
+    except DataMexicoUnreachable:
+        raise
+    except DataMexicoError:  # some year members may not exist in the cube
+        rows = client.data(tc.name, [tc.year.param, tc.period.param], [measure], locale=locale)
     return period_coverage(rows, tc.year, tc.period)
 
 

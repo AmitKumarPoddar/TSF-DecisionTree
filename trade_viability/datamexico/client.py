@@ -25,6 +25,7 @@ serves both; only the response shapes differ and are normalised here.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 from urllib.parse import urlencode
@@ -46,6 +47,16 @@ USER_AGENT = "trade-viability-explorer/1.0 (+https://www.economia.gob.mx/datamex
 
 class DataMexicoError(RuntimeError):
     """Raised when the API cannot be reached or returns an error."""
+
+
+class DataMexicoUnreachable(DataMexicoError):
+    """The server could not be contacted at all (network/firewall/outage)."""
+
+
+# Transient failures are retried with exponential backoff (2s, 4s).
+RETRIES = 3
+RETRY_STATUS = {429, 500, 502, 503, 504}
+CONNECT_TIMEOUT = 15.0
 
 
 @dataclass
@@ -86,9 +97,11 @@ class TesseractClient:
         timeout: float = 60.0,
         session: requests.Session | None = None,
         log: QueryLog | None = None,
+        retries: int = RETRIES,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self.retries = max(1, retries)
         self.session = session or requests.Session()
         self.session.headers.setdefault("User-Agent", USER_AGENT)
         self.session.headers.setdefault("Accept", "application/json")
@@ -107,7 +120,7 @@ class TesseractClient:
         """Return a client for the first base URL whose /cubes endpoint answers."""
         errors: list[str] = []
         for url in base_urls or candidate_base_urls():
-            client = cls(url, timeout=timeout)
+            client = cls(url, timeout=timeout, retries=1)
             try:
                 cubes = client.cubes()
             except DataMexicoError as exc:
@@ -115,6 +128,7 @@ class TesseractClient:
                 continue
             if cubes:
                 client.timeout = max(timeout, 60.0)
+                client.retries = RETRIES
                 return client
             errors.append(f"{url}: no cubes returned")
         raise DataMexicoError(
@@ -133,10 +147,25 @@ class TesseractClient:
     def get_json(self, path: str, params: Mapping[str, str] | None = None):
         url = self.url_for(path, params)
         self.log.add(url)
-        try:
-            response = self.session.get(url, timeout=self.timeout)
-        except requests.RequestException as exc:
-            raise DataMexicoError(f"request failed: {exc}") from exc
+        response = None
+        for attempt in range(self.retries):
+            if attempt:
+                time.sleep(2 ** attempt)
+            try:
+                response = self.session.get(
+                    url, timeout=(min(CONNECT_TIMEOUT, self.timeout), self.timeout))
+            except (requests.ConnectionError, requests.ConnectTimeout) as exc:
+                if attempt == self.retries - 1:
+                    raise DataMexicoUnreachable(
+                        f"could not connect to {self.base_url} after {self.retries} attempts ({exc.__class__.__name__})"
+                    ) from exc
+                continue
+            except requests.RequestException as exc:
+                if attempt == self.retries - 1:
+                    raise DataMexicoError(f"request failed: {exc}") from exc
+                continue
+            if response.status_code not in RETRY_STATUS:
+                break
         if response.status_code >= 400:
             raise DataMexicoError(
                 f"HTTP {response.status_code} for {url}: {_error_detail(response)}"
