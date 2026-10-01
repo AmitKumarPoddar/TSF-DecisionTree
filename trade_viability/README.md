@@ -14,6 +14,27 @@ Tesseract API.
    states. You also get signals for the four viability tests, plus an Excel
    export.
 
+## Recurring-demand workflow (branch `viability_workflow`)
+
+The app opens on **Recurring-demand workflow**. The original analysis is under
+**View → Trade explorer** in the sidebar.
+
+| Tab | What happens |
+|---|---|
+| **1 · Opportunity & market size** | Enter the opportunity, vertical and immediate base material. **1A**: Mexico market-size figures for the exact opportunity, found by AI web search or entered manually. **1B**, only if 1A has no usable Mexico figure: base-material figures × two-level relevance (r1 = 1 / number of categories, r2 = 1 / number of parallel products; both can be overridden). |
+| **2 · Trade recurrence** | The same HS search, charts and export as the Trade explorer. Recurrence uses the **last 5 complete years only**: recurring if imports appear in at least 4 of 5 (adjustable); strength **High** if net imports are positive in all 5, otherwise **Moderate**. |
+| **3 · Recurring-demand result** | Market found + recurring → ✅ established. Market found only → ⚠️ recurrence not evidenced. Trade only → ⚠️ established from trade (lower confidence). Neither → ❌ *The recurring demand could not be established.* Includes an imports-vs-market cross-check. |
+| **🔒 Market sources** | Append-only register of every figure found or entered. Edits are logged as new entries and nothing can be deleted. Also lists the pages each AI search consulted, an Excel report, and save/load of the whole assessment (JSON). |
+
+How market sizes are calculated:
+- **Output.** For each step: minimum, maximum, average of all Mexico figures, average of the selected figures, and the value used (the selected average, or the average of all when none are selected).
+- **Comparable figures.** Values are converted to USD million at live ECB rates (editable in the sidebar) and moved to the reference year using each source's own CAGR. Volume figures (kt) are kept separate from value figures. Non-Mexico figures are shown but left out of the range and averages unless selected.
+
+**AI search** uses Claude (`claude-opus-5-5`) with web search. Add an Anthropic API key in
+the sidebar, or as `ANTHROPIC_API_KEY` in the app's Streamlit **Secrets**. Each search uses API
+credits. A figure is flagged "URL seen in search" only if its link was among the pages the
+search returned; review every figure before ticking it.
+
 ## Run it
 
 ```bash
