@@ -151,3 +151,17 @@ def test_register_ignores_blank_rows():
     reg = []
     m.log_figures(reg, m.figures_frame([{"use": False}]), "1A", "PP")
     assert reg == []
+
+
+def test_source_cagr_applied_to_same_source_series():
+    # IMARC-style series: only the forecast states the CAGR.
+    df = _figs(
+        {"publisher": "IMARC", "title": "PP", "amount": 1.39, "unit": "Billion USD", "year": 2020, "geography": "Mexico", "url": "https://i.com/pp"},
+        {"publisher": "IMARC", "title": "PP", "amount": 1.71, "unit": "Billion USD", "year": 2025, "geography": "Mexico", "url": "https://i.com/pp"},
+        {"publisher": "IMARC", "title": "PP", "amount": 2.51, "unit": "Billion USD", "year": 2034, "geography": "Mexico", "url": "https://i.com/pp", "cagr_pct": 4.16},
+        {"publisher": "Other", "title": "x", "amount": 1.5, "unit": "USD billion", "year": 2020, "geography": "Mexico"},
+    )
+    n = m.normalize(df, FX, 2025)
+    assert n.loc[0, "at_ref_year"] == pytest.approx(1390 * 1.0416 ** 5)
+    assert "source's stated CAGR" in n.loc[0, "adjustment"]
+    assert n.loc[3, "at_ref_year"] == 1500 and "not adjusted" in n.loc[3, "adjustment"]  # other source untouched

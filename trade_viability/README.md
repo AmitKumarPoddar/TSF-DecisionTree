@@ -30,10 +30,16 @@ How market sizes are calculated:
 - **Output.** For each step: minimum, maximum, average of all Mexico figures, average of the selected figures, and the value used (the selected average, or the average of all when none are selected).
 - **Comparable figures.** Values are converted to USD million at live ECB rates (editable in the sidebar) and moved to the reference year using each source's own CAGR. Volume figures (kt) are kept separate from value figures. Non-Mexico figures are shown but left out of the range and averages unless selected.
 
-**AI search** uses Claude (`claude-opus-5-5`) with web search. Add an Anthropic API key in
-the sidebar, or as `ANTHROPIC_API_KEY` in the app's Streamlit **Secrets**. Each search uses API
-credits. A figure is flagged "URL seen in search" only if its link was among the pages the
-search returned; review every figure before ticking it.
+**AI research** is available with two providers, selected in the sidebar:
+
+| Provider | Key (Streamlit **Secrets**) | Default model | How it finds figures |
+|---|---|---|---|
+| **Gemini (Google)**, the default | `GEMINI_API_KEY` (optional `GEMINI_MODEL`) | `gemini-flash-lite-latest` | Google Search grounding if your plan allows it; on the free tier, Gemini proposes candidate report pages and reads them with its URL-reading tool |
+| Claude (Anthropic) | `ANTHROPIC_API_KEY` | `claude-opus-5-5` | Claude web search |
+
+- **"URL seen in search" flag.** It is ticked only when the figure's page was actually returned or read. Review every figure before ticking it.
+- **Your own URLs.** You can paste report URLs you found yourself, and the AI reads those first.
+- **No web search on the free tier.** On a free Gemini key, the product-structure suggestion comes from the model's knowledge and is labelled as such.
 
 ## Run it
 

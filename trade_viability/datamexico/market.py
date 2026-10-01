@@ -81,20 +81,48 @@ def figures_frame(rows: Iterable[Mapping]) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+_CURRENCY_ALIASES = {"us$": "USD", "usd": "USD", "$": "USD", "us dollars": "USD", "dollars": "USD",
+                     "mxn": "MXN", "mx$": "MXN", "pesos": "MXN", "eur": "EUR", "€": "EUR", "euros": "EUR"}
+_SCALE_WORDS = [("billion", 1e3), ("bn", 1e3), ("million", 1.0), ("mn", 1.0), ("mm", 1.0),
+                ("thousand", 1e-3)]
+
+
 def parse_unit(unit: str) -> tuple[str, str | None, float | None]:
     """Return (kind, currency, multiplier-to-millions-or-kt) for a unit label.
 
     kind is ``value`` (money, normalised to millions of USD), ``volume``
-    (normalised to kilotonnes) or ``unknown``.
+    (normalised to kilotonnes) or ``unknown``. Accepts the usual ways sources
+    write units: "USD million", "Billion USD", "US$ bn", "MXN mil millones" is
+    not supported (enter it as "MXN billion"), "kt", "million tonnes", ...
     """
     text = str(unit or "").strip()
     m = _CURRENCY_UNIT.match(text)
     if m:
         return "value", m.group(1).upper(), _SCALE[m.group(2).lower()]
-    low = text.lower()
-    low = re.sub(r"\(.*?\)", "", low).strip()
+    low = re.sub(r"\(.*?\)", "", text.lower()).strip()
+    low = re.sub(r"\s+", " ", low)
     if low in _VOLUME_UNIT:
         return "volume", None, _VOLUME_UNIT[low]
+    # Volume written out: "metric tons", "million metric tonnes", "thousand tons"
+    if re.search(r"\bton(ne)?s?\b|\bkt\b|\bmmt\b", low):
+        if re.search(r"million|\bmmt\b|\bmt\b", low):
+            return "volume", None, 1e3
+        if re.search(r"thousand|\bkt\b", low):
+            return "volume", None, 1.0
+        return "volume", None, 1e-3
+    currency = None
+    for alias, code in sorted(_CURRENCY_ALIASES.items(), key=lambda kv: -len(kv[0])):
+        found = re.search(rf"\b{re.escape(alias)}\b", low) if alias.isalpha() else alias in low
+        if found:
+            currency = code
+            break
+    if currency is None:
+        iso = re.search(r"\b([a-z]{3})\b", low)
+        if iso and iso.group(1) not in {"bn", "mln"}:
+            currency = iso.group(1).upper()
+    scale = next((mult for word, mult in _SCALE_WORDS if re.search(rf"\b{word}\b", low)), None)
+    if currency and scale is not None:
+        return "value", currency, scale
     return "unknown", None, None
 
 
@@ -110,6 +138,18 @@ def _num(x) -> float | None:
     return None if math.isnan(v) else v
 
 
+def _source_keys(row) -> list[str]:
+    keys = []
+    url = str(getattr(row, "url", "") or "").strip().lower().rstrip("/")
+    if url and url not in ("nan", "none"):
+        keys.append("url:" + url)
+    pub = str(getattr(row, "publisher", "") or "").strip().lower()
+    title = str(getattr(row, "title", "") or "").strip().lower()
+    if pub and pub not in ("nan", "none"):
+        keys.append(f"pub:{pub}|{title}")
+    return keys
+
+
 def normalize(df: pd.DataFrame, fx_per_usd: Mapping[str, float], ref_year: int) -> pd.DataFrame:
     """Add comparable amounts: USD millions (value) or kilotonnes (volume), at ``ref_year``.
 
@@ -118,6 +158,14 @@ def normalize(df: pd.DataFrame, fx_per_usd: Mapping[str, float], ref_year: int) 
     CAGR when given; otherwise they are kept as reported and flagged.
     """
     out = df.copy()
+    # A source usually states one growth rate for its whole series: reuse it for
+    # that source's other figures (same page, or same publisher + title).
+    source_cagr: dict[str, float] = {}
+    for row in out.itertuples(index=False):
+        c = _num(row.cagr_pct)
+        if c is not None:
+            for k in _source_keys(row):
+                source_cagr.setdefault(k, c)
     kinds, comparable, adjusted, notes = [], [], [], []
     for row in out.itertuples(index=False):
         kind, currency, mult = parse_unit(row.unit)
@@ -138,10 +186,15 @@ def normalize(df: pd.DataFrame, fx_per_usd: Mapping[str, float], ref_year: int) 
             base = amount * mult
         adj = base
         year, cagr = _num(row.year), _num(row.cagr_pct)
+        borrowed = False
+        if cagr is None:
+            cagr = next((source_cagr[k] for k in _source_keys(row) if k in source_cagr), None)
+            borrowed = cagr is not None
         if base is not None and year is not None and int(year) != ref_year:
             if cagr is not None:
                 adj = base * (1 + cagr / 100) ** (ref_year - int(year))
-                note.append(f"moved {int(year)}→{ref_year} at {cagr:g}%/yr")
+                note.append(f"moved {int(year)}→{ref_year} at {cagr:g}%/yr"
+                            + (" (the source's stated CAGR)" if borrowed else ""))
             else:
                 note.append(f"{int(year)} figure, not adjusted (no CAGR)")
         if not is_mexico(row.geography):

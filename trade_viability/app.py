@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from datamexico import ai_research as ai
+from datamexico import gemini_research as gem
 from datamexico import charts, service
 from datamexico import market as mk
 from datamexico.analysis import (
@@ -593,6 +594,14 @@ def load_fx():
         return {}, ""
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def gemini_models(api_key: str) -> list[str]:
+    try:
+        return gem.list_text_models(gem.make_client(api_key))
+    except Exception:  # noqa: BLE001 - bad key or network: fall back to the default model
+        return []
+
+
 def _secret(name: str) -> str:
     try:
         return str(st.secrets.get(name, "") or "")
@@ -665,19 +674,25 @@ def _stats_block(stats: mk.MarketStats | None, label: str) -> None:
         st.warning(w)
 
 
-def _figures_step(wf: dict, step: str, material: str, opportunity: str, ai_client, fx: dict,
+def _figures_step(wf: dict, step: str, material: str, opportunity: str, researcher, fx: dict,
                   ref_year: int) -> tuple[pd.DataFrame, mk.MarketStats | None]:
     """Editable figures table + AI search + normalised view + statistics."""
     edited = st.data_editor(
         wf["figs"][step], key=f"figs_{step}_{wf['ver'][step]}", num_rows="dynamic", hide_index=True,
         column_config=FIG_COLUMN_CONFIG, disabled=["verified_url"], width="stretch",
     )
+    urls_text = st.text_area(
+        "Report URLs for the AI to read (optional, one per line)", key=f"urls_{step}", height=68,
+        placeholder="https://www.example.com/mexico-polypropylene-market",
+        help="Pages you found yourself (e.g. a publisher's Mexico report page). The AI reads them and extracts "
+        "the figures. Leave empty to let the AI find candidate pages.")
     b1, b2 = st.columns([2, 3])
     if b1.button(f"🔎 Find market sizes for “{material or '…'}” with AI", key=f"ai_{step}",
-                 disabled=ai_client is None or not material):
-        with st.spinner("Searching the web and reading sources (usually 1–3 minutes)…"):
+                 disabled=researcher is None or not material):
+        urls = [u.strip() for u in urls_text.splitlines() if u.strip().startswith("http")]
+        with st.spinner("Researching sources (usually 10 seconds to 2 minutes)…"):
             try:
-                res = ai.find_market_sizes(ai_client, material, opportunity)
+                res = researcher.find_market_sizes(material, opportunity, urls)
             except ai.AIResearchError as exc:
                 st.error(str(exc))
                 res = None
@@ -688,11 +703,14 @@ def _figures_step(wf: dict, step: str, material: str, opportunity: str, ai_clien
             wf["notes"][step] = res.data.get("notes", "")
             _log_consulted(wf, step, material, res.consulted)
             mk.log_figures(wf["register"], new, step, material)
-            st.session_state["_flash"] = f"AI search added {len(new)} figure(s) for {material}."
+            st.session_state["_flash"] = (f"AI ({res.data.get('mode', researcher.provider)}) added {len(new)} "
+                                          f"figure(s) for {material}." if len(new) else
+                                          f"AI ({res.data.get('mode', researcher.provider)}) found no figures for "
+                                          f"{material}. Try adding report URLs, or enter figures manually.")
             st.rerun()
-    if ai_client is None:
-        b2.caption("AI search is off: add an Anthropic API key in the sidebar. You can always add rows manually "
-                   "(click + below the table).")
+    if researcher is None:
+        b2.caption("AI search is off: add a Gemini (or Anthropic) API key in the sidebar. You can always add rows "
+                   "manually (click + below the table).")
     if wf["notes"].get(step):
         st.caption(f"AI coverage note: {wf['notes'][step]}")
 
@@ -762,7 +780,7 @@ def _apply_loaded(data: dict) -> None:
     }
 
 
-def recurring_demand_workflow(ai_client, fx: dict, ref_year: int, min_years: int) -> None:
+def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: int) -> None:
     if "_pending_load" in st.session_state:  # restore a saved assessment before any widget exists
         try:
             _apply_loaded(st.session_state.pop("_pending_load"))
@@ -801,7 +819,7 @@ def recurring_demand_workflow(ai_client, fx: dict, ref_year: int, min_years: int
             st.info("Enter the opportunity to start.")
 
         st.subheader(f"Step {STEP_1A}: market size of “{name or 'the opportunity'}” in Mexico")
-        edited_a, stats_a = _figures_step(wf, STEP_1A, name, name, ai_client, fx, ref_year)
+        edited_a, stats_a = _figures_step(wf, STEP_1A, name, name, researcher, fx, ref_year)
         current_fps = mk.log_figures(wf["register"], edited_a, STEP_1A, name)
 
         exact_found = stats_a is not None and stats_a.found
@@ -814,7 +832,7 @@ def recurring_demand_workflow(ai_client, fx: dict, ref_year: int, min_years: int
             if exact_found:
                 st.caption("Not used while the exact opportunity has a usable figure. Kept for reference.")
             st.markdown(f"**Market size of “{base or 'the base material'}” in Mexico**")
-            edited_b, stats_b = _figures_step(wf, STEP_1B, base, name, ai_client, fx, ref_year)
+            edited_b, stats_b = _figures_step(wf, STEP_1B, base, name, researcher, fx, ref_year)
             current_fps += mk.log_figures(wf["register"], edited_b, STEP_1B, base)
 
             st.markdown("**Relevance: how much of the base-material market belongs to the opportunity**")
@@ -822,10 +840,10 @@ def recurring_demand_workflow(ai_client, fx: dict, ref_year: int, min_years: int
                        "opportunity's category into its parallel products. Each defaults to an equal split "
                        "(1 / number of entries) and can be overridden.")
             if st.button("🔎 Suggest base material, categories and parallel products with AI",
-                         disabled=ai_client is None or not name, key="ai_hier"):
+                         disabled=researcher is None or not name, key="ai_hier"):
                 with st.spinner("Researching the product structure (usually 1–2 minutes)…"):
                     try:
-                        res = ai.suggest_hierarchy(ai_client, name, base)
+                        res = researcher.suggest_hierarchy(name, base)
                     except ai.AIResearchError as exc:
                         st.error(str(exc))
                         res = None
@@ -844,7 +862,8 @@ def recurring_demand_workflow(ai_client, fx: dict, ref_year: int, min_years: int
                                    res.consulted + [s for s in d.get("sources", []) if isinstance(s, dict)])
                     if d.get("base_material") and not base:
                         st.session_state["_pending_base"] = d["base_material"]
-                    st.session_state["_flash"] = "AI suggested the product structure: review it below."
+                    st.session_state["_flash"] = (f"AI ({d.get('mode', researcher.provider)}) suggested the product "
+                                                  "structure: review it below.")
                     st.rerun()
             if wf["rationale"]:
                 st.caption(f"AI rationale: {wf['rationale']}")
@@ -1047,10 +1066,28 @@ else:
                                                 format="%.4f", key=f"fx_{cur}") or None
             fx_rates = {k: v for k, v in fx_rates.items() if v}
         st.header("AI research")
-        key = st.text_input("Anthropic API key", type="password", key="ai_key",
-                            value=_secret("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", ""),
-                            help="Needed for AI web search. Store it in the app's Secrets as ANTHROPIC_API_KEY "
-                            "so you don't have to paste it each time.")
-        st.caption(f"Model: {ai.MODEL} with web search. Each AI search uses API credits.")
-    client = ai.make_client(key) if key else None
-    recurring_demand_workflow(client, fx_rates, int(wf_ref_year), int(wf_min_years))
+        gem_key = _secret("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY", "")
+        claude_key = _secret("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY", "")
+        providers = [gem.GeminiResearcher.provider, ai.ClaudeResearcher.provider]
+        provider = st.radio("Provider", providers, key="ai_provider",
+                            index=1 if claude_key and not gem_key else 0)
+        if provider == gem.GeminiResearcher.provider:
+            key = st.text_input("Gemini API key", type="password", key="gem_key", value=gem_key,
+                                help="Store it in the app's Secrets as GEMINI_API_KEY so you don't have to paste it.")
+            models = gemini_models(key) if key else []
+            preferred = _secret("GEMINI_MODEL") or gem.DEFAULT_MODEL
+            options = models or [preferred]
+            if preferred not in options:
+                options = [preferred] + options
+            model = st.selectbox("Gemini model", options, index=options.index(preferred), key="gem_model",
+                                 help="'-latest' aliases always point to Google's current model. Flash-Lite has the "
+                                 "most generous free-tier limits; Flash is stronger but busier.")
+            researcher = gem.GeminiResearcher(key, model) if key else None
+            st.caption("Uses Google Search when your plan allows it, otherwise reads report pages. "
+                       "About 2–3 requests per AI click.")
+        else:
+            key = st.text_input("Anthropic API key", type="password", key="ai_key", value=claude_key,
+                                help="Store it in the app's Secrets as ANTHROPIC_API_KEY.")
+            researcher = ai.ClaudeResearcher(key) if key else None
+            st.caption(f"Model: {ai.MODEL} with web search. Each AI search uses API credits.")
+    recurring_demand_workflow(researcher, fx_rates, int(wf_ref_year), int(wf_min_years))

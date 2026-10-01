@@ -274,13 +274,15 @@ def url_verified(url: str, consulted: list[dict]) -> bool:
 # --------------------------------------------------------------------------- #
 # Public tasks
 # --------------------------------------------------------------------------- #
-def find_market_sizes(client: anthropic.Anthropic, material: str, opportunity: str = "") -> ResearchResult:
-    text, consulted = _run_search(client, _market_prompt(material, opportunity))
-    data = extract_json(text)
-    if data is None or "figures" not in data:
-        data = _structure(client, text, _FIGURES_SCHEMA)
+def clean_figures(raw_figures, consulted: list[dict], verify=None) -> list[dict]:
+    """Normalise model-reported figures into rows for the figures table.
+
+    ``verify(url) -> bool`` decides ``verified_url``; by default the URL must
+    be one of the ``consulted`` pages.
+    """
+    verify = verify or (lambda url: url_verified(url, consulted))
     figures = []
-    for fig in data.get("figures", []) or []:
+    for fig in raw_figures or []:
         if not isinstance(fig, dict):
             continue
         try:
@@ -298,10 +300,23 @@ def find_market_sizes(client: anthropic.Anthropic, material: str, opportunity: s
             "cagr_pct": fig.get("cagr_pct"),
             "url": str(fig.get("url") or "").strip(),
             "origin": "AI",
-            "verified_url": url_verified(fig.get("url", ""), consulted),
+            "verified_url": bool(verify(fig.get("url", ""))),
             "note": str(fig.get("note") or "").strip(),
         })
-    data["figures"] = figures
+    return figures
+
+
+def find_market_sizes(client: anthropic.Anthropic, material: str, opportunity: str = "",
+                      urls: list[str] | None = None) -> ResearchResult:
+    prompt = _market_prompt(material, opportunity)
+    if urls:
+        prompt += "\n\nAlso read these pages the analyst found:\n" + "\n".join(urls)
+    text, consulted = _run_search(client, prompt)
+    data = extract_json(text)
+    if data is None or "figures" not in data:
+        data = _structure(client, text, _FIGURES_SCHEMA)
+    data["figures"] = clean_figures(data.get("figures"), consulted)
+    data["mode"] = "Claude web search"
     return ResearchResult(data=data, consulted=consulted, text=text)
 
 
@@ -319,3 +334,19 @@ def suggest_hierarchy(client: anthropic.Anthropic, opportunity: str, base_materi
         if isinstance(src, dict):
             src["verified_url"] = url_verified(src.get("url", ""), consulted)
     return ResearchResult(data=data, consulted=consulted, text=text)
+
+
+class ClaudeResearcher:
+    """Provider adapter used by the app (same interface as GeminiResearcher)."""
+
+    provider = "Claude (Anthropic)"
+
+    def __init__(self, api_key: str, model: str = MODEL):
+        self.client = make_client(api_key)
+        self.model = model
+
+    def find_market_sizes(self, material: str, opportunity: str = "", urls: list[str] | None = None) -> ResearchResult:
+        return find_market_sizes(self.client, material, opportunity, urls)
+
+    def suggest_hierarchy(self, opportunity: str, base_material: str = "") -> ResearchResult:
+        return suggest_hierarchy(self.client, opportunity, base_material)
