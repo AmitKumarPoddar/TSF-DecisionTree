@@ -101,6 +101,77 @@ _HIERARCHY_SCHEMA = {
 }
 
 
+_COMPANIES_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "companies": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string"},
+                    "group": {"type": "string"},
+                    "type": {"type": "string"},
+                    "country": {"type": "string"},
+                    "product": {"type": "string"},
+                    "url": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "sells_in_mexico": {"type": "boolean"},
+                },
+                "required": ["company", "group", "type", "country", "product", "url", "evidence",
+                             "sells_in_mexico"],
+                "additionalProperties": False,
+            },
+        },
+        "notes": {"type": "string"},
+    },
+    "required": ["companies", "notes"],
+    "additionalProperties": False,
+}
+
+COMPANY_TYPES_TEXT = ('"Mexican producer/compounder", "Distributor/importer in Mexico", '
+                      '"International supplier selling into Mexico" or "Other"')
+
+
+def competitor_prompt(opportunity: str, base_material: str = "") -> str:
+    exclude = (f" Do NOT count companies that only sell {base_material} itself - only companies offering "
+               f"{opportunity} specifically.") if base_material else ""
+    return f"""Find every company that supplies **{opportunity}** in **Mexico**: Mexican producers or
+compounders, distributors or importers selling it in Mexico, and international companies selling it into
+the Mexican market.{exclude} Search thoroughly (company product pages, distributor catalogues, Mexican
+business directories, trade-show exhibitor lists, news).
+
+For each company give: company (legal or trading name), group (parent group; same as company if
+independent), type ({COMPANY_TYPES_TEXT}), country (headquarters), product (the matching product as the
+company describes it), url (page showing the product or the Mexican presence), evidence (one line: why it
+counts), sells_in_mexico (true/false). Only include companies you found evidence for; if none exist, return
+an empty list and say so in notes.
+
+Finish with JSON in a ```json code block: {{"companies": [...], "notes": "..."}}"""
+
+
+def clean_companies(raw, consulted: list[dict], verify=None) -> list[dict]:
+    verify = verify or (lambda url: url_verified(url, consulted))
+    out = []
+    for c in raw or []:
+        if not isinstance(c, dict) or not str(c.get("company") or "").strip():
+            continue
+        sells = c.get("sells_in_mexico")
+        out.append({
+            "include": sells is not False,
+            "company": str(c.get("company") or "").strip(),
+            "group": str(c.get("group") or "").strip(),
+            "type": str(c.get("type") or "").strip(),
+            "country": str(c.get("country") or "").strip(),
+            "product": str(c.get("product") or "").strip(),
+            "url": str(c.get("url") or "").strip(),
+            "origin": "AI",
+            "verified_url": bool(verify(c.get("url", ""))),
+            "note": str(c.get("evidence") or "").strip() + ("" if sells is not False else " (not confirmed to sell in Mexico)"),
+        })
+    return out
+
+
 def _market_prompt(material: str, opportunity_context: str = "") -> str:
     context = f"\nContext: this supports the evaluation of '{opportunity_context}'." if opportunity_context else ""
     return f"""Find published market-size estimates for **{material}** in **Mexico**.{context}
@@ -336,6 +407,16 @@ def suggest_hierarchy(client: anthropic.Anthropic, opportunity: str, base_materi
     return ResearchResult(data=data, consulted=consulted, text=text)
 
 
+def find_competitors(client: anthropic.Anthropic, opportunity: str, base_material: str = "") -> ResearchResult:
+    text, consulted = _run_search(client, competitor_prompt(opportunity, base_material))
+    data = extract_json(text)
+    if data is None or "companies" not in data:
+        data = _structure(client, text, _COMPANIES_SCHEMA)
+    data["companies"] = clean_companies(data.get("companies"), consulted)
+    data["mode"] = "Claude web search"
+    return ResearchResult(data=data, consulted=consulted, text=text)
+
+
 class ClaudeResearcher:
     """Provider adapter used by the app (same interface as GeminiResearcher)."""
 
@@ -350,3 +431,6 @@ class ClaudeResearcher:
 
     def suggest_hierarchy(self, opportunity: str, base_material: str = "") -> ResearchResult:
         return suggest_hierarchy(self.client, opportunity, base_material)
+
+    def find_competitors(self, opportunity: str, base_material: str = "") -> ResearchResult:
+        return find_competitors(self.client, opportunity, base_material)

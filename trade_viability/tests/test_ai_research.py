@@ -112,3 +112,18 @@ def test_url_verified_subpage():
     assert ai.url_verified("https://x.com/report/page-2", consulted)
     assert not ai.url_verified("https://y.com/report", consulted)
     assert not ai.url_verified("", consulted)
+
+
+def test_find_competitors_claude():
+    data = {"companies": [
+        {"company": "A SA de CV", "group": "A", "type": "Distributor/importer in Mexico", "country": "Mexico",
+         "product": "mineral-filled PP", "url": "https://a.mx/p", "evidence": "catalogue", "sells_in_mexico": True},
+        {"company": "B", "group": "B", "type": "Other", "country": "US", "product": "PP", "url": "https://b.com",
+         "evidence": "", "sells_in_mexico": False}], "notes": ""}
+    client = FakeClient([NS(stop_reason="end_turn", content=[_search_block("https://a.mx/p"),
+                                                              _text("```json\n" + json.dumps(data) + "\n```")])])
+    res = ai.find_competitors(client, "Mineral-filled PP", "Polypropylene")
+    a, b = res.data["companies"]
+    assert a["include"] and a["verified_url"]
+    assert not b["include"] and "not confirmed" in b["note"]
+    assert "Do NOT count companies that only sell Polypropylene" in client.stream_calls[0]["messages"][0]["content"]

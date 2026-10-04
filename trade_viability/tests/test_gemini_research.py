@@ -125,3 +125,24 @@ def test_list_text_models_filters_non_text():
               NS(name="models/text-embedding-004", supported_actions=["embedContent"])]
     client = NS(models=NS(list=lambda: models))
     assert gr.list_text_models(client) == ["gemini-flash-lite-latest", "gemini-3.5-flash"]
+
+
+def test_competitors_free_tier_confirms_by_reading_pages():
+    cands = {"companies": [
+        {"company": "Compounder MX", "group": "Compounder MX", "type": "Mexican producer/compounder", "country": "Mexico",
+         "product": "talc-filled PP", "url": "https://cmx.mx/pp", "evidence": "", "sells_in_mexico": True},
+        {"company": "Ghost Co", "group": "", "type": "Other", "country": "US", "product": "x",
+         "url": "https://ghost.example/x", "evidence": "", "sells_in_mexico": True}], "notes": ""}
+    read = {"companies": [cands["companies"][0]], "notes": "one confirmed"}
+    r, models = _researcher([
+        _err(429, "RESOURCE_EXHAUSTED"),                       # no search on free plan
+        _resp(json.dumps(cands)),                              # candidates (JSON mode)
+        _resp("```json\n" + json.dumps(read) + "\n```", url_meta=[("https://cmx.mx/pp", "SUCCESS"),
+                                                                  ("https://ghost.example/x", "ERROR")]),
+    ])
+    res = r.find_competitors("Mineral-filled PP", "Polypropylene")
+    comps = {c["company"]: c for c in res.data["companies"]}
+    assert comps["Compounder MX"]["include"] and comps["Compounder MX"]["verified_url"]
+    assert not comps["Ghost Co"]["include"] and "not confirmed" in comps["Ghost Co"]["note"]
+    assert "Confirmed 1 of 2" in res.data["notes"]
+    assert [k for _, k in models.calls] == ["search", "plain", "url"]

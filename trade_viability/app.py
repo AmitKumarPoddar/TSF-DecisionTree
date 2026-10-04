@@ -17,6 +17,7 @@ from datamexico import ai_research as ai
 from datamexico import gemini_research as gem
 from datamexico import charts, service
 from datamexico import market as mk
+from datamexico import openmarket as om
 from datamexico.analysis import (
     EXPORTS, FAIL, IMPORTS, MANUAL, NA, PASS, WATCH, Thresholds, cagr, concentration, fmt_value,
     full_years, hhi_band, overall_verdict, partial_years_from_coverage, viability_signals, yearly_summary,
@@ -573,7 +574,8 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
                 st.code(url, language=None)
 
     return {"summary": summary, "complete": complete, "partial": partial, "years": years,
-            "basket": list(basket.values()), "by_hs": by_hs, "unit": unit}
+            "basket": list(basket.values()), "by_hs": by_hs, "by_country": by_country, "keys": keys,
+            "unit": unit}
 
 
 # ====================================================================== #
@@ -622,6 +624,10 @@ def _wf_state() -> dict:
     wf.setdefault("register", [])
     wf.setdefault("consulted", [])
     wf.setdefault("notes", {})
+    wf.setdefault("companies", om.empty_companies())
+    wf["ver"].setdefault("comp", 0)
+    wf.setdefault("comp_register", [])
+    wf.setdefault("comp_scan_done", False)
     return wf
 
 
@@ -772,6 +778,11 @@ def _apply_loaded(data: dict) -> None:
     wf["register"] = list(data.get("register", []))
     wf["consulted"] = list(data.get("consulted", []))
     wf["notes"] = dict(data.get("notes", {}))
+    wf["companies"] = om.companies_frame(data.get("competitors", []))
+    wf["ver"]["comp"] = wf["ver"].get("comp", 0) + 1
+    wf["comp_register"] = list(data.get("competitor_register", []))
+    wf["comp_scan_done"] = bool(data.get("competitor_scan_done", False))
+    st.session_state["om_none_confirmed"] = bool(data.get("no_supplier_confirmed", False))
     st.session_state.basket = {
         f"{b['digits']}:{b['member_id']}": HSEntry(digits=int(b["digits"]), member_id=str(b["member_id"]),
                                                    code=b.get("code", ""), label=b.get("label", ""),
@@ -779,6 +790,169 @@ def _apply_loaded(data: dict) -> None:
         for b in data.get("hs_codes", [])
     }
 
+
+
+COMP_COLUMN_CONFIG = {
+    "include": st.column_config.CheckboxColumn("Include", default=True,
+                                               help="Counts toward the number of competitor groups."),
+    "company": st.column_config.TextColumn("Company"),
+    "group": st.column_config.TextColumn("Parent group", help="Subsidiaries of one group count once."),
+    "type": st.column_config.SelectboxColumn("Type", options=om.COMPANY_TYPES, default="Other"),
+    "country": st.column_config.TextColumn("HQ country"),
+    "product": st.column_config.TextColumn("Product (as the company describes it)"),
+    "url": st.column_config.LinkColumn("Source URL"),
+    "origin": st.column_config.TextColumn("Origin", default="Manual"),
+    "verified_url": st.column_config.CheckboxColumn("Page seen", default=False,
+                                                    help="AI only: the page was actually returned or read."),
+    "note": st.column_config.TextColumn("Evidence / note"),
+}
+
+
+@st.cache_data(ttl=6 * 3600, show_spinner=False)
+def _load_quantity(base_url_: str, cube: str, keys: tuple, measure: str, locale_: str):
+    client = TesseractClient(base_url_)
+    tc_ = get_cube(base_url_, cube)
+    flows, _ = load_flows(base_url_, cube, locale_)
+    df = service.fetch_trade(client, tc_, _entries_from_keys(keys), measure, flows, "hs", locale_)
+    return df
+
+
+def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> dict:
+    """Open-market check: import trend, HHI, competitor scan and verdict."""
+    mode_ = theme_mode()
+    out = {"verdict": None, "evidence": [], "trend_table": None, "hhi_table": None, "comp_fps": [],
+           "companies": om.empty_companies()}
+    exact_hs = st.session_state.get("hs_represents", HS_BASE) == HS_EXACT
+    st.caption("Uses the same HS codes as step 2. "
+               + ("They are the **exact opportunity's** codes: imports alone decide the result; the competitor scan "
+                  "is optional evidence." if exact_hs else
+                  "They are the **base material's** codes: the competitor scan for the exact opportunity is "
+                  "required."))
+
+    # ---- Step 1: import trend ------------------------------------------
+    st.subheader("4.1 · Import trend (last 5 complete years)")
+    trend = None
+    if trade_out is None:
+        st.info("Select HS codes and fetch trade data in tab 2 first.")
+    else:
+        series = trade_out["summary"]["imports"]
+        measure_used, unit_used = measure, trade_out["unit"]
+        qty = om.quantity_measure(tc.measures)
+        if qty and qty != measure:
+            try:
+                qdf = _load_quantity(base_url, cube_name, trade_out["keys"], qty, locale)
+                qdf = qdf[qdf["year"] >= MIN_YEAR]
+                qsum = qdf[qdf["flow"] == IMPORTS].groupby("year")["value"].sum()
+                if qsum.sum() > 0:
+                    series, measure_used, unit_used = qsum, qty, ""
+            except DataMexicoError:
+                pass
+        trend = om.import_trend(series, trade_out["complete"], measure_used)
+        val_trend = om.import_trend(trade_out["summary"]["imports"], trade_out["complete"], measure)
+        if trend.years:
+            st.plotly_chart(charts.import_trend_chart(trend.years, trend.values, trend.trend_line, unit_used,
+                                                      f"Imports ({measure_used}) and trend", mode_),
+                            key="om_trend")
+        c = st.columns(4)
+        c[0].metric("Trend", trend.classification,
+                    help="Growing ≥ +2 %/yr, Stable between −2 % and +2 %, Declining < −2 % (Theil–Sen trend).")
+        c[1].metric("Average yearly change (trend)", "–" if trend.slope_pct is None else f"{trend.slope_pct:+.1%}")
+        c[2].metric("First → last growth", "–" if trend.first_last_cagr is None else f"{trend.first_last_cagr:+.1%}/yr")
+        c[3].metric("Years", f"{trend.years[0]}–{trend.years[-1]}" if trend.years else "–")
+        if measure_used != measure and val_trend.slope_pct is not None:
+            st.caption(f"Trend based on {measure_used} (volume), so price swings don't distort it. "
+                       f"By {measure}: {val_trend.classification} ({val_trend.slope_pct:+.1%}/yr).")
+        else:
+            st.caption(f"Trend based on {measure_used} (no quantity measure in this cube, so price swings can "
+                       "affect it).")
+        out["trend_table"] = pd.DataFrame({"year": trend.years, measure_used: trend.values,
+                                           "trend line": trend.trend_line})
+
+    # ---- Step 2: HHI ------------------------------------------------------
+    st.subheader("4.2 · Supplier-country concentration (HHI) - note only")
+    hhi = None
+    if trade_out is not None and trend is not None and trend.years:
+        hhi = om.hhi_series(trade_out.get("by_country"), trend.years)
+        if hhi.table.empty:
+            st.info("No partner-country breakdown available for these codes.")
+        else:
+            st.plotly_chart(charts.hhi_chart(hhi.table, mode_), key="om_hhi")
+            st.caption(hhi.note + " HHI never changes the pass/fail result.")
+            out["hhi_table"] = hhi.table
+
+    # ---- Step 3: competitors ----------------------------------------------
+    st.subheader("4.3 · Competitors supplying the exact opportunity in Mexico"
+                 + (" (optional)" if exact_hs else " (required)"))
+    st.caption(f"Any domestic or international company selling **{name or 'the opportunity'}** in Mexico counts; "
+               "companies selling only the base material do not. Subsidiaries of one group count once; "
+               f"{om.MIN_COMPETITORS}+ groups = fragmented market. Add or correct rows manually.")
+    edited = st.data_editor(wf["companies"], key=f"companies_{wf['ver']['comp']}", num_rows="dynamic",
+                            hide_index=True, column_config=COMP_COLUMN_CONFIG, disabled=["verified_url"],
+                            width="stretch")
+    b1, b2 = st.columns([2, 3])
+    if b1.button(f"🔎 Find companies supplying “{name or '…'}” in Mexico with AI", key="ai_comp",
+                 disabled=researcher is None or not name):
+        with st.spinner("Searching for suppliers (usually 10 seconds to 2 minutes)…"):
+            try:
+                res = researcher.find_competitors(name, base)
+            except ai.AIResearchError as exc:
+                st.error(str(exc))
+                res = None
+        if res is not None:
+            new = om.companies_frame(res.data.get("companies", []))
+            wf["companies"] = pd.concat([edited, new], ignore_index=True) if len(edited) else new
+            wf["ver"]["comp"] += 1
+            wf["comp_scan_done"] = True
+            wf["notes"]["competitors"] = res.data.get("notes", "")
+            _log_consulted(wf, "Open market · competitors", name, res.consulted)
+            om.log_companies(wf["comp_register"], new, name)
+            st.session_state["_flash"] = (f"AI ({res.data.get('mode', researcher.provider)}) returned {len(new)} "
+                                          "company record(s): review them below.")
+            st.rerun()
+    if researcher is None:
+        b2.caption("AI search is off: add an API key in the sidebar, or enter companies manually.")
+    if wf["notes"].get("competitors"):
+        st.caption(f"AI note: {wf['notes']['competitors']}")
+    out["comp_fps"] = om.log_companies(wf["comp_register"], edited, name)
+    out["companies"] = edited
+    groups = om.distinct_groups(edited)
+    if len(edited.dropna(how="all")):
+        wf["comp_scan_done"] = True  # manual entries count as a scan
+    n = len(groups)
+    reading = ("fragmented" if n >= om.MIN_COMPETITORS else "present but concentrated" if n else "none found")
+    st.metric("Distinct competitor groups", n, reading, delta_color="off", delta_arrow="off")
+    none_confirmed = False
+    if n == 0 and not exact_hs:
+        none_confirmed = st.checkbox(
+            "Search reviewed: I confirm no domestic or international company supplies this product in Mexico",
+            key="om_none_confirmed",
+            help="Required before the app concludes 'No market in Mexico'. Check the AI results and any other "
+            "sources (expert interviews, distributor catalogues) first.")
+    elif "om_none_confirmed" in st.session_state and n:
+        st.session_state["om_none_confirmed"] = False
+
+    # ---- Step 4: verdict ---------------------------------------------------
+    st.subheader("4.4 · Open-market result")
+    verdict = om.open_market_verdict(exact_hs, trend, n if wf["comp_scan_done"] else None, wf["comp_scan_done"],
+                                     none_confirmed, hhi, name or "the opportunity")
+    banner = {om.OPEN: st.success, om.NOT_OPEN: st.error, om.NO_MARKET: st.error, om.PENDING: st.info}.get(
+        verdict.code, st.warning)
+    banner(f"{verdict.icon} **{verdict.headline}**  \n{verdict.detail}")
+    for note_ in verdict.notes:
+        st.caption(f"Note: {note_}")
+    evidence = [
+        ("HS codes represent", HS_EXACT if exact_hs else HS_BASE),
+        ("Import trend", "–" if trend is None else
+         f"{trend.classification} ({'–' if trend.slope_pct is None else f'{trend.slope_pct:+.1%}/yr'}, "
+         f"{trend.measure}, {trend.years[0] if trend.years else ''}–{trend.years[-1] if trend.years else ''})"),
+        ("HHI (latest)", "–" if hhi is None or hhi.latest is None else f"{hhi.latest:,.0f}, {hhi.direction}"),
+        ("Competitor groups", str(n) + ("" if wf["comp_scan_done"] else " (scan not run)")),
+        ("Groups counted", ", ".join(groups) or "–"),
+    ]
+    st.dataframe(pd.DataFrame(evidence, columns=["Item", "Value"]), hide_index=True, width="stretch",
+                 column_config={"Value": st.column_config.TextColumn(width="large")})
+    out.update(verdict=verdict, evidence=evidence)
+    return out
 
 def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: int) -> None:
     if "_pending_load" in st.session_state:  # restore a saved assessment before any widget exists
@@ -791,10 +965,10 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         st.session_state["opp_base"] = st.session_state.pop("_pending_base")
     flash = st.session_state.pop("_flash", None)
 
-    st.title("Opportunity viability · Recurring demand")
-    st.caption("Step 1 establishes the market size in Mexico (exact, or derived from the base material); "
-               "step 2 checks that imports recur over the last 5 complete years; step 3 concludes. "
-               "Every source used is locked into the Market sources tab.")
+    st.title("Opportunity viability")
+    st.caption("Recurring demand (tabs 1–3): market size in Mexico, imports recurring over the last 5 complete "
+               "years, and the conclusion. Open market (tab 4): import trend, supplier concentration and "
+               "competitors. Every source used is locked into the Market sources tab.")
     # Always present, so messages appearing or disappearing never shift the tabs
     # (a layout shift above st.tabs resets the selected tab).
     notice = st.container()
@@ -803,8 +977,8 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
     if st.session_state.get("_flash_error"):
         notice.error(st.session_state.pop("_flash_error"))
 
-    t1, t2, t3, t4 = st.tabs(["1 · Opportunity & market size", "2 · Trade recurrence",
-                              "3 · Recurring-demand result", "🔒 Market sources"])
+    t1, t2, t3, t_om, t4 = st.tabs(["1 · Opportunity & market size", "2 · Trade recurrence",
+                                    "3 · Recurring-demand result", "4 · Open market", "🔒 Market sources"])
 
     # ------------------------------------------------------------------ #
     with t1:
@@ -973,6 +1147,10 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
                            f"{imports_m / compare_to:.0%} of the {label} ({compare_to:,.1f} USD m).")
 
     # ------------------------------------------------------------------ #
+    with t_om:
+        om_out = _open_market_tab(wf, name, base, trade_out, researcher)
+
+    # ------------------------------------------------------------------ #
     with t4:
         st.subheader("🔒 Market sources")
         st.caption("Every market-size figure found by AI or entered manually is logged here and cannot be removed. "
@@ -982,6 +1160,15 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             st.info("No market sources logged yet.")
         else:
             st.dataframe(reg.drop(columns=["fingerprint"]), hide_index=True, width="stretch",
+                         column_config={"url": st.column_config.LinkColumn("Source URL")})
+        st.markdown("**Competitor evidence (open-market check)**")
+        comp_reg = pd.DataFrame(wf["comp_register"])
+        if comp_reg.empty:
+            st.caption("None yet.")
+        else:
+            comp_reg["status"] = ["in calculation" if fp in om_out["comp_fps"] else
+                                  "edited / removed from calculation" for fp in comp_reg["fingerprint"]]
+            st.dataframe(comp_reg.drop(columns=["fingerprint"]), hide_index=True, width="stretch",
                          column_config={"url": st.column_config.LinkColumn("Source URL")})
         st.markdown("**Pages consulted by AI searches**")
         consulted = pd.DataFrame(wf["consulted"], columns=["logged_at", "step", "material", "title", "url"])
@@ -996,7 +1183,7 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
             "opportunity": name, "vertical": st.session_state.get("opp_vertical", ""), "base_material": base,
             "hs_represents": st.session_state.get("hs_represents", HS_BASE),
-            "figures": {s: wf["figs"][s].to_dict("records") for s in (STEP_1A, STEP_1B)},
+            "figures": {STEP_1A: edited_a.to_dict("records"), STEP_1B: edited_b.to_dict("records")},
             "categories": cats.to_dict("records"),
             "products": prods.to_dict("records"),
             "rationale": wf["rationale"], "register": wf["register"], "consulted": wf["consulted"],
@@ -1004,19 +1191,34 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             "hs_codes": [{"digits": e.digits, "member_id": e.member_id, "code": e.code, "label": e.label,
                           "parent_label": e.parent_label} for e in st.session_state.get("basket", {}).values()],
             "verdict": {"code": verdict.code, "headline": verdict.headline, "detail": verdict.detail},
+            "competitors": om_out["companies"].to_dict("records"),
+            "competitor_register": wf["comp_register"],
+            "competitor_scan_done": wf["comp_scan_done"],
+            "no_supplier_confirmed": bool(st.session_state.get("om_none_confirmed", False)),
+            "open_market_verdict": {"code": om_out["verdict"].code, "headline": om_out["verdict"].headline,
+                                    "detail": om_out["verdict"].detail},
         }
         stem = "".join(ch if ch.isalnum() else "_" for ch in (name or "opportunity"))[:50]
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             pd.DataFrame([("Verdict", f"{verdict.icon} {verdict.headline}"), ("Detail", verdict.detail)]
                          + evidence, columns=["Item", "Value"]).to_excel(writer, sheet_name="Result", index=False)
-            for s in (STEP_1A, STEP_1B):
-                wf["figs"][s].to_excel(writer, sheet_name=f"Figures {s[:2]}", index=False)
+            for s, df_ in ((STEP_1A, edited_a), (STEP_1B, edited_b)):
+                df_.to_excel(writer, sheet_name=f"Figures {s[:2]}", index=False)
             cats.to_excel(writer, sheet_name="Relevance L1", index=False)
             prods.to_excel(writer, sheet_name="Relevance L2", index=False)
             if trade_rec is not None:
                 trade_rec.table.to_excel(writer, sheet_name="Trade recurrence")
             reg.drop(columns=["fingerprint"]).to_excel(writer, sheet_name="Market sources", index=False)
+            omv = om_out["verdict"]
+            pd.DataFrame([("Verdict", f"{omv.icon} {omv.headline}"), ("Detail", omv.detail)]
+                         + [("Note", n) for n in omv.notes] + om_out["evidence"],
+                         columns=["Item", "Value"]).to_excel(writer, sheet_name="Open market", index=False)
+            if om_out["trend_table"] is not None:
+                om_out["trend_table"].to_excel(writer, sheet_name="Import trend", index=False)
+            if om_out["hhi_table"] is not None and not om_out["hhi_table"].empty:
+                om_out["hhi_table"].to_excel(writer, sheet_name="HHI by year", index=False)
+            om_out["companies"].to_excel(writer, sheet_name="Competitors", index=False)
             consulted.to_excel(writer, sheet_name="Pages consulted", index=False)
         d1, d2 = st.columns(2)
         d1.download_button("Download Excel report", buffer.getvalue(), file_name=f"recurring_demand_{stem}.xlsx",

@@ -26,8 +26,9 @@ from google.genai import errors as genai_errors
 from google.genai import types
 
 from .ai_research import (
-    _FIGURES_SCHEMA, _HIERARCHY_SCHEMA, AIResearchError, ResearchResult, _hierarchy_prompt, _market_prompt,
-    clean_figures, extract_json, url_verified,
+    _COMPANIES_SCHEMA, _FIGURES_SCHEMA, _HIERARCHY_SCHEMA, COMPANY_TYPES_TEXT, AIResearchError, ResearchResult,
+    _hierarchy_prompt, _market_prompt, clean_companies, clean_figures, competitor_prompt, extract_json,
+    url_verified,
 )
 
 DEFAULT_MODEL = "gemini-flash-lite-latest"   # free-tier friendly alias for the current Flash-Lite model
@@ -189,6 +190,63 @@ class GeminiResearcher:
         response = self._generate(prompt, config)
         data = extract_json(response.text or "") or {}
         return [u for u in data.get("urls", []) if isinstance(u, str) and u.startswith("http")]
+
+    def find_competitors(self, opportunity: str, base_material: str = "") -> ResearchResult:
+        """Companies supplying the exact opportunity in Mexico (search, or candidates + page reading)."""
+        prompt = competitor_prompt(opportunity, base_material)
+        response = self._grounded(prompt)
+        if response is not None:
+            consulted = grounding_sources(response)
+            data = self._json(response.text, _COMPANIES_SCHEMA, "companies")
+            domains = {p["domain"] for p in consulted if p.get("domain")}
+            data["companies"] = clean_companies(data.get("companies"), consulted,
+                                                verify=lambda url: _domain(url) in domains)
+            data["mode"] = "Google Search grounding"
+            return ResearchResult(data=data, consulted=consulted, text=response.text or "")
+
+        # Free tier: candidates from model knowledge, then confirm by reading their pages.
+        exclude = f" Exclude companies that only sell {base_material} itself." if base_material else ""
+        cand_prompt = (
+            f"List up to 15 companies that supply **{opportunity}** in Mexico (Mexican producers or "
+            f"compounders, distributors/importers in Mexico, international suppliers selling into Mexico).{exclude} "
+            f"For each give company, group, type ({COMPANY_TYPES_TEXT}), country, product, url (the company's page "
+            "for this product or its Mexico page), evidence, sells_in_mexico. Return JSON only: "
+            '{"companies": [...], "notes": "..."}')
+        config = types.GenerateContentConfig(response_mime_type="application/json",
+                                             response_json_schema=_COMPANIES_SCHEMA)
+        cand_resp = self._generate(cand_prompt, config)
+        candidates = self._json(cand_resp.text, _COMPANIES_SCHEMA, "companies").get("companies", []) or []
+        urls = [c.get("url") for c in candidates if isinstance(c, dict) and str(c.get("url", "")).startswith("http")]
+        urls = list(dict.fromkeys(urls))[:MAX_URLS]
+        confirmed, consulted, notes = [], [], ""
+        if urls:
+            read_prompt = (
+                f"Read these pages. For each page you successfully read, say whether the company supplies "
+                f"**{opportunity}** (not just {base_material or 'the base material'}) and whether it sells in Mexico. "
+                "Use only what the pages say. Finish with JSON in a ```json block: {\"companies\": [{\"company\", "
+                f"\"group\", \"type\" ({COMPANY_TYPES_TEXT}), \"country\", \"product\", \"url\", \"evidence\", "
+                "\"sells_in_mexico\"}], \"notes\": \"...\"} listing only companies a page confirms supply the product.\n\n"
+                + "\n".join(urls))
+            resp = self._generate(read_prompt, types.GenerateContentConfig(tools=[types.Tool(url_context=types.UrlContext())]))
+            retrieved, _ = url_retrieval(resp)
+            consulted = [{"url": u, "title": "page read"} for u in retrieved]
+            data = self._json(resp.text, _COMPANIES_SCHEMA, "companies")
+            confirmed = clean_companies(data.get("companies"), consulted)
+            notes = str(data.get("notes") or "")
+        from .openmarket import group_key  # local import avoids a cycle at module load
+        seen = {group_key(c["company"], c["group"]) for c in confirmed}
+        unconfirmed = []
+        for c in clean_companies(candidates, []):
+            if group_key(c["company"], c["group"]) not in seen:
+                c.update(include=False, verified_url=False,
+                         note=(c["note"] + " | Suggested from model knowledge; not confirmed by a page read - "
+                               "tick Include if you can confirm it.").strip(" |"))
+                unconfirmed.append(c)
+        out = {"companies": confirmed + unconfirmed,
+               "notes": (notes + f" Confirmed {len(confirmed)} of {len(candidates)} candidate companies by reading "
+                         f"{len(consulted)} page(s).").strip(),
+               "mode": "Candidates + page reading (Google Search not available on this key)"}
+        return ResearchResult(data=out, consulted=consulted, text="")
 
     def suggest_hierarchy(self, opportunity: str, base_material: str = "") -> ResearchResult:
         prompt = _hierarchy_prompt(opportunity, base_material)

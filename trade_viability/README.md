@@ -24,11 +24,24 @@ The app opens on **Recurring-demand workflow**. The original analysis is under
 | **1 · Opportunity & market size** | Enter the opportunity, vertical and immediate base material. **1A**: Mexico market-size figures for the exact opportunity, found by AI web search or entered manually. **1B**, only if 1A has no usable Mexico figure: base-material figures × two-level relevance (r1 = 1 / number of categories, r2 = 1 / number of parallel products; both can be overridden). |
 | **2 · Trade recurrence** | The same HS search, charts and export as the Trade explorer. Recurrence uses the **last 5 complete years only**: recurring if imports appear in at least 4 of 5 (adjustable); strength **High** if net imports are positive in all 5, otherwise **Moderate**. |
 | **3 · Recurring-demand result** | Market found + recurring → ✅ established. Market found only → ⚠️ recurrence not evidenced. Trade only → ⚠️ established from trade (lower confidence). Neither → ❌ *The recurring demand could not be established.* Includes an imports-vs-market cross-check. |
-| **🔒 Market sources** | Append-only register of every figure found or entered. Edits are logged as new entries and nothing can be deleted. Also lists the pages each AI search consulted, an Excel report, and save/load of the whole assessment (JSON). |
+| **4 · Open market** | Import trend, supplier-country HHI and a competitor scan for the exact opportunity (see below). |
+| **🔒 Market sources** | Append-only register of every figure found or entered and of every competitor found. Edits are logged as new entries and nothing can be deleted. Also lists the pages each AI search consulted, an Excel report, and save/load of the whole assessment (JSON). |
 
 How market sizes are calculated:
 - **Output.** For each step: minimum, maximum, average of all Mexico figures, average of the selected figures, and the value used (the selected average, or the average of all when none are selected).
 - **Comparable figures.** Values are converted to USD million at live ECB rates (editable in the sidebar) and moved to the reference year using each source's own CAGR. Volume figures (kt) are kept separate from value figures. Non-Mexico figures are shown but left out of the range and averages unless selected.
+
+How the open-market check works (tab 4):
+- **Import trend.** Uses the same HS codes as tab 2 and the last 5 complete years. It uses volume when the cube has a quantity measure, otherwise value. The trend is a Theil–Sen line (the median of all pairwise slopes), so a single spike year can't decide it. Above +2%/yr is **Growing**, −2% to +2% is **Stable**, below −2% is **Declining**.
+- **HHI by year.** Supplier-country concentration with its 5-year direction. It is a note only and never changes the result.
+- **Competitors.** Companies, domestic or international, that supply the *exact opportunity* in Mexico. Companies that only sell the base material are not counted. Subsidiaries of one group count once. 4 or more groups means the market is fragmented.
+
+| HS codes used | Result |
+|---|---|
+| Exact opportunity | Growing/stable imports → ✅ open. Declining imports or no imports → ❌ not open. The competitor scan is optional. |
+| Base material | Scan required. 4+ groups with growing/stable imports → ✅ open. 4+ groups with declining imports, or 1–3 groups → ⚠️ watch. 0 groups → *No market in Mexico for this opportunity*, but only after you tick the confirmation box; until then the result is provisional. |
+
+On a free Gemini key, competitor candidates come from the model's knowledge and are checked by reading their pages. Candidates that could not be confirmed are listed with **Include** unticked. Tick the ones you can confirm.
 
 **AI research** is available with two providers, selected in the sidebar:
 
@@ -116,6 +129,9 @@ datamexico/hs.py        HS code normalisation and search (keyword, code prefix, 
 datamexico/service.py   Queries used by the UI (one request per HS level selected)
 datamexico/analysis.py  Yearly summary, CAGR, HHI, apparent consumption, 4-test signals
 datamexico/charts.py    Plotly figures
+datamexico/market.py    Recurring demand: market sizes, relevance, recurrence, sources register
+datamexico/openmarket.py  Open market: import trend, HHI notes, competitor groups, verdict
+datamexico/ai_research.py, gemini_research.py  AI research (Claude / Gemini)
 tests/                  pytest suite + mock Tesseract server (synthetic data)
 ```
 

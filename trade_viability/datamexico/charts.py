@@ -174,3 +174,34 @@ def dependence_chart(summary: pd.DataFrame, partial: Iterable[int], threshold: f
     fig = _layout(fig, mode, "Import dependence (imports ÷ apparent consumption)", "", height=300)
     fig.update_yaxes(tickformat=".0%", rangemode="tozero")
     return fig
+
+
+TREND_INK = {"light": "#52514e", "dark": "#c3c2b7"}  # secondary text ink for reference lines
+
+
+def import_trend_chart(years, values, trend_line, unit: str, title: str, mode: str = "light") -> go.Figure:
+    """Imports per year (columns) with the Theil-Sen trend line (one axis)."""
+    x = [str(y) for y in years]
+    fig = go.Figure()
+    fig.add_bar(x=x, y=values, name="Imports", marker={"color": PALETTE[mode][0]},
+                hovertemplate=f"Imports: %{{y:,.0f}} {unit}<extra></extra>")
+    fig.add_scatter(x=x, y=trend_line, name="Trend (Theil–Sen)", mode="lines",
+                    line={"color": TREND_INK[mode], "width": 2},
+                    hovertemplate=f"Trend: %{{y:,.0f}} {unit}<extra></extra>")
+    return _layout(fig, mode, title, unit, height=320)
+
+
+def hhi_chart(table: pd.DataFrame, mode: str = "light") -> go.Figure:
+    """Supplier-country HHI by year with the 1,500 / 2,500 reference bands."""
+    x = [str(y) for y in table["year"]]
+    fig = go.Figure()
+    fig.add_scatter(x=x, y=table["hhi"], name="HHI", mode="lines+markers",
+                    line={"color": PALETTE[mode][0], "width": 2}, marker={"size": 8},
+                    hovertemplate="HHI %{y:,.0f}<extra></extra>")
+    for level, label in ((1500, "1,500 unconcentrated below"), (2500, "2,500 highly concentrated above")):
+        fig.add_hline(y=level, line={"color": GRID[mode] if mode == "dark" else "#a3a29c", "width": 1},
+                      annotation_text=label, annotation_position="top left")
+    fig.update_layout(showlegend=False)
+    fig = _layout(fig, mode, "Supplier-country concentration (HHI) by year", "", height=280)
+    fig.update_yaxes(rangemode="tozero", tickformat=",")
+    return fig
