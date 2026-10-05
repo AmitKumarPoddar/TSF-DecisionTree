@@ -286,36 +286,91 @@ class Relevance:
         return self.r1 * (self.r2 if self.level2 else 1.0)
 
 
+NET = "net"
+GROSS = "gross"
+BASIS_TEXT = {NET: "net imports (imports − exports)", GROSS: "gross imports"}
+
+
 @dataclass
-class MarketResult:
-    method: str                    # "exact", "derived" or "none"
-    stats: MarketStats | None      # stats of the figures used (exact or base)
-    relevance: Relevance | None    # only for "derived"
-    estimate: float | None         # opportunity market (used x relevance)
+class TradeMarket:
+    """Minimum market from trade: imports of the selected HS codes × relevance.
+
+    Apparent consumption = production + imports − exports, and production ≥ 0, so net imports
+    are a floor for the market. Value added after import and domestic production only raise it.
+    """
+    basis: str                 # NET or GROSS
+    unit: str                  # e.g. "USD million"
+    relevance: float           # 1.0 when the HS codes are the exact opportunity
+    table: pd.DataFrame        # per year: imports, exports, net_imports, basis_value, minimum_market
+    latest_year: int | None
+    estimate: float | None     # latest year's minimum market (None if the basis is not positive)
     low: float | None
     high: float | None
-    average_all: float | None
-    unit: str = ""
+    average: float | None
+    note: str = ""
 
     @property
     def found(self) -> bool:
         return self.estimate is not None
 
 
-def market_result(exact: MarketStats | None, base: MarketStats | None,
-                  relevance: Relevance | None) -> MarketResult:
-    """Combine step 1A and 1B into the opportunity's market size."""
+def trade_market(summary: pd.DataFrame, years: Sequence[int], relevance: float, basis: str = NET,
+                 unit: str = "USD") -> TradeMarket:
+    """Minimum market for each of ``years`` (the recurrence window); the latest year is used."""
+    usd = str(unit).strip().upper().startswith("USD")
+    scale, out_unit = (1e-6, "USD million") if usd else (1.0, unit or "units")
+    years = [y for y in years if y in summary.index]
+    table = summary.loc[years, ["imports", "exports", "net_imports"]].astype(float) * scale
+    col = "net_imports" if basis == NET else "imports"
+    table["basis_value"] = table[col]
+    table["minimum_market"] = table["basis_value"].clip(lower=0) * relevance
+    if not years:
+        return TradeMarket(basis, out_unit, relevance, table, None, None, None, None, None,
+                           "No complete years of trade data.")
+    latest = years[-1]
+    positive = table["basis_value"] > 0
+    note = ""
+    estimate = float(table.loc[latest, "minimum_market"]) if positive[latest] else None
+    if estimate is None:
+        note = (f"{BASIS_TEXT[basis].capitalize()} in {latest} are not positive (Mexico exported at least as much "
+                "as it imported), so imports cannot give a minimum market size.")
+    vals = table.loc[positive, "minimum_market"]
+    return TradeMarket(basis, out_unit, relevance, table, latest, estimate,
+                       float(vals.min()) if len(vals) else None, float(vals.max()) if len(vals) else None,
+                       float(vals.mean()) if len(vals) else None, note)
+
+
+@dataclass
+class MarketResult:
+    method: str                    # "exact", "trade" or "none"
+    stats: MarketStats | None      # stats of the exact-opportunity figures
+    relevance: Relevance | None    # only for "trade" on base-material HS codes
+    estimate: float | None         # value used for the opportunity's market
+    low: float | None
+    high: float | None
+    average_all: float | None
+    unit: str = ""
+    trade: TradeMarket | None = None
+
+    @property
+    def found(self) -> bool:
+        return self.estimate is not None
+
+
+METHOD_TEXT = {"exact": "Exact opportunity figures (market reports)",
+               "trade": "Minimum market from imports × relevance", "none": "Not found"}
+
+
+def market_result(exact: MarketStats | None, trade: TradeMarket | None,
+                  relevance: Relevance | None = None) -> MarketResult:
+    """Step 1A (reports for the exact opportunity) first; otherwise step 1B (minimum from imports)."""
     if exact is not None and exact.found:
         return MarketResult("exact", exact, None, exact.used, exact.minimum, exact.maximum,
-                            exact.average_all, exact.unit)
-    if base is not None and base.found and relevance is not None:
-        r = relevance.combined
-
-        def scale(v):
-            return None if v is None else v * r
-        return MarketResult("derived", base, relevance, scale(base.used), scale(base.minimum),
-                            scale(base.maximum), scale(base.average_all), base.unit)
-    return MarketResult("none", None, None, None, None, None, None)
+                            exact.average_all, exact.unit, trade)
+    if trade is not None and trade.found:
+        return MarketResult("trade", None, relevance, trade.estimate, trade.low, trade.high,
+                            trade.average, trade.unit, trade)
+    return MarketResult("none", None, None, None, None, None, None, trade=trade)
 
 
 # --------------------------------------------------------------------------- #
@@ -372,24 +427,29 @@ class Verdict:
     detail: str
 
 
+def _method_short(market: MarketResult) -> str:
+    return "exact-opportunity figures" if market.method == "exact" else "minimum from imports × relevance"
+
+
 def recurring_demand_verdict(market: MarketResult, trade: TradeRecurrence | None) -> Verdict:
     if trade is None:
         return Verdict(PENDING, "⏳", "Pending trade check",
                        "Select HS codes and fetch trade data in step 2 to complete the assessment.")
     if market.found and trade.recurring:
         return Verdict(ESTABLISHED, "✅", "Recurring demand established",
-                       f"Market size found ({market.method}) and imports in {trade.years_with_imports} of "
+                       f"Market size: {_method_short(market)}; imports in {trade.years_with_imports} of "
                        f"the last {len(trade.years)} years; strength: {trade.strength}.")
     if market.found:
         return Verdict(NOT_RECURRING, "⚠️", "Demand exists, but recurring imports are not evidenced",
-                       f"Market size found ({market.method}), but imports in only {trade.years_with_imports} "
+                       f"Market size: {_method_short(market)}; but imports in only {trade.years_with_imports} "
                        f"of the last {len(trade.years)} years (needs {trade.min_years}).")
     if trade.recurring:
         return Verdict(TRADE_ONLY, "⚠️", "Recurring demand established from trade data only (lower confidence)",
-                       f"No market-size figure found, but imports in {trade.years_with_imports} of the last "
+                       "No market size (no exact-opportunity figure, and the import basis is not positive in the latest "
+                       f"year), but imports in {trade.years_with_imports} of the last "
                        f"{len(trade.years)} years; strength: {trade.strength}.")
     return Verdict(NOT_ESTABLISHED, "❌", NOT_ESTABLISHED_TEXT,
-                   "No market-size figure was found and imports do not recur.")
+                   "No market size could be established and imports do not recur.")
 
 
 # --------------------------------------------------------------------------- #

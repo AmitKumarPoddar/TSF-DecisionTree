@@ -64,24 +64,34 @@ def test_only_non_mexico_figures_are_not_a_market_size():
     assert m.primary_stats(m.normalize(df, FX, 2025)) is None
 
 
-def test_derived_market_uses_two_level_relevance():
-    base = _figs({"amount": 1000, "unit": "USD million", "year": 2025, "geography": "Mexico"},
-                 {"amount": 2000, "unit": "USD million", "year": 2025, "geography": "Mexico"})
-    stats = m.market_stats(m.normalize(base, FX, 2025), "value")
+def test_trade_market_is_net_imports_times_relevance():
+    summary = _summary([1000e6, 1200e6, 1500e6, 1400e6, 2000e6], [100e6, 200e6, 300e6, 400e6, 500e6])
     rel = m.Relevance(n_categories=4, r1=m.default_share(4), n_products=5, r2=m.default_share(5))
-    res = m.market_result(None, stats, rel)
-    assert res.method == "derived"
-    assert res.estimate == pytest.approx(1500 * 0.25 * 0.2)
-    assert (res.low, res.high) == (pytest.approx(50), pytest.approx(100))
-    rel.level2 = False
-    assert m.market_result(None, stats, rel).estimate == pytest.approx(375)
+    tm = m.trade_market(summary, list(range(2019, 2024)), rel.combined)
+    assert tm.unit == "USD million" and tm.latest_year == 2023
+    assert tm.estimate == pytest.approx(1500 * 0.05)          # 2023 net imports 1,500 m × 0.05
+    assert (tm.low, tm.high) == (pytest.approx(45), pytest.approx(75))
+    res = m.market_result(None, tm, rel)
+    assert res.method == "trade" and res.estimate == pytest.approx(75) and res.trade is tm
+    gross = m.trade_market(summary, list(range(2019, 2024)), rel.combined, m.GROSS)
+    assert gross.estimate == pytest.approx(2000 * 0.05)
+
+
+def test_trade_market_exact_hs_and_net_exporter():
+    summary = _summary([100e6, 100e6], [50e6, 150e6])
+    tm = m.trade_market(summary, [2019, 2020], 1.0)
+    assert tm.estimate is None and "not positive" in tm.note
+    assert tm.low == tm.high == pytest.approx(50)            # 2019 still shown in the range
+    assert m.market_result(None, tm).method == "none"
+    assert m.trade_market(summary, [2019], 1.0).estimate == pytest.approx(50)
 
 
 def test_exact_market_takes_precedence():
     exact = m.market_stats(m.normalize(_figs({"amount": 40, "unit": "USD million", "year": 2025,
                                               "geography": "Mexico"}), FX, 2025), "value")
-    res = m.market_result(exact, exact, m.Relevance(5, 0.2, 5, 0.2))
-    assert res.method == "exact" and res.estimate == 40
+    tm = m.trade_market(_summary([1e9], [0]), [2019], 0.04)
+    res = m.market_result(exact, tm, m.Relevance(5, 0.2, 5, 0.2))
+    assert res.method == "exact" and res.estimate == 40 and res.trade is tm
 
 
 def _summary(imports, exports, start=2019):

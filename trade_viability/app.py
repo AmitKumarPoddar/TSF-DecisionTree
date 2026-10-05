@@ -583,7 +583,8 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
 # ====================================================================== #
 VERTICALS = ["Propylene", "Ethylene", "Chemical/Petrochemical Distribution"]
 STEP_1A = "1A · Exact opportunity"
-STEP_1B = "1B · Base material"
+STEP_1B = "1B · Minimum market from imports"
+BASIS_OPTIONS = {"Net imports (imports − exports)": mk.NET, "Gross imports": mk.GROSS}
 HS_EXACT = "The exact opportunity"
 HS_BASE = "The immediate base material"
 
@@ -767,7 +768,7 @@ def _apply_loaded(data: dict) -> None:
     st.session_state["opp_vertical"] = data.get("vertical", VERTICALS[0])
     st.session_state["opp_base"] = data.get("base_material", "")
     st.session_state["hs_represents"] = data.get("hs_represents", HS_BASE)
-    for step in (STEP_1A, STEP_1B):
+    for step in (STEP_1A,):
         wf["figs"][step] = mk.figures_frame(data.get("figures", {}).get(step, []))
         wf["ver"][step] += 1
     wf["categories"] = pd.DataFrame(data.get("categories", []), columns=["Category", "Contains opportunity"])
@@ -954,7 +955,47 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> d
     out.update(verdict=verdict, evidence=evidence)
     return out
 
-def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: int) -> None:
+BASIS_TEXT_UI = {mk.NET: "net imports = imports − exports", mk.GROSS: "gross imports"}
+
+
+def _market_result_block(market: mk.MarketResult, trade_mkt: mk.TradeMarket | None, ref_year: int,
+                         represents_exact: bool, relevance: mk.Relevance) -> None:
+    if market.method == "exact":
+        u = "USD m" if market.unit.startswith("USD") else "kt"
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(f"Market size used ({u})", f"{market.estimate:,.1f}", help=market.stats.basis)
+        m2.metric(f"Range, min – max ({u})", f"{market.low:,.1f} – {market.high:,.1f}")
+        m3.metric(f"Average of all figures ({u})",
+                  f"{market.average_all:,.1f}" if market.average_all is not None else "–")
+        m4.metric("Method", "Exact (reports)")
+        st.caption(f"Reference year {ref_year}. Method: exact-opportunity figures.")
+        return
+    if trade_mkt is None:
+        st.info("No exact-opportunity figure yet. Fetch trade data in tab 2 to get the minimum market from imports.")
+        return
+    rel_text = "1 (HS codes are the exact opportunity)" if represents_exact else f"{relevance.combined:.4f}"
+    u = "USD m" if trade_mkt.unit == "USD million" else trade_mkt.unit
+    if market.method == "trade":
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric(f"Minimum market, {trade_mkt.latest_year} ({u})", f"{market.estimate:,.1f}",
+                  help="Latest complete year. A floor, not an estimate of the full market.")
+        m2.metric(f"Range over 5 years ({u})", f"{market.low:,.1f} – {market.high:,.1f}")
+        m3.metric(f"5-year average ({u})", f"{market.average_all:,.1f}")
+        m4.metric("Method", "From imports")
+        latest = trade_mkt.table.loc[trade_mkt.latest_year, "basis_value"]
+        st.caption(f"{trade_mkt.latest_year}: {mk.BASIS_TEXT[trade_mkt.basis]} {latest:,.1f} {u} × relevance "
+                   f"{rel_text} = **{market.estimate:,.1f} {u}** minimum. The real market is at least this large.")
+    else:
+        st.warning(trade_mkt.note or "No market size established yet.")
+    tbl = trade_mkt.table.rename(columns={"imports": f"imports ({u})", "exports": f"exports ({u})",
+                                          "net_imports": f"net imports ({u})",
+                                          "basis_value": f"basis: {mk.BASIS_TEXT[trade_mkt.basis]}",
+                                          "minimum_market": f"minimum market ({u})"})
+    with st.expander("Minimum market by year"):
+        st.dataframe(tbl.style.format("{:,.1f}"), width="stretch")
+
+
+def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: int, basis: str = mk.NET) -> None:
     if "_pending_load" in st.session_state:  # restore a saved assessment before any widget exists
         try:
             _apply_loaded(st.session_state.pop("_pending_load"))
@@ -997,19 +1038,23 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         current_fps = mk.log_figures(wf["register"], edited_a, STEP_1A, name)
 
         exact_found = stats_a is not None and stats_a.found
-        relevance = None
-        stats_b = None
+        represents_exact = st.session_state.get("hs_represents", HS_BASE) == HS_EXACT
         if exact_found:
             st.success("Exact Mexico market size found: step 1B is not needed.")
-        with st.expander(f"Step {STEP_1B}: market size of the base material, scaled by relevance",
-                         expanded=not exact_found):
+        with st.expander(f"Step {STEP_1B} × relevance", expanded=not exact_found):
             if exact_found:
-                st.caption("Not used while the exact opportunity has a usable figure. Kept for reference.")
-            st.markdown(f"**Market size of “{base or 'the base material'}” in Mexico**")
-            edited_b, stats_b = _figures_step(wf, STEP_1B, base, name, researcher, fx, ref_year)
-            current_fps += mk.log_figures(wf["register"], edited_b, STEP_1B, base)
+                st.caption("Not used while the exact opportunity has a usable figure. Kept for reference and for "
+                           "the cross-check in tab 3.")
+            st.markdown(
+                f"When no report gives the exact opportunity's market, the **minimum market** is taken from Mexico's "
+                f"imports of the HS codes selected in tab 2 ({BASIS_TEXT_UI[basis]}, latest complete year) × relevance. "
+                "It is a floor: domestic production and value added after import only make the real market larger. "
+                "Market reports for the base material are not used.")
+            if represents_exact:
+                st.info("Tab 2's HS codes represent the exact opportunity, so no relevance split is applied "
+                        "(relevance = 1).")
 
-            st.markdown("**Relevance: how much of the base-material market belongs to the opportunity**")
+            st.markdown("**Relevance: how much of the base material's imports belongs to the opportunity**")
             st.caption("Level 1 splits the base material into its broad categories; level 2 splits the "
                        "opportunity's category into its parallel products. Each defaults to an equal split "
                        "(1 / number of entries) and can be overridden.")
@@ -1055,24 +1100,15 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
                 n2 = int(prods["Parallel product"].fillna("").astype(str).str.strip().ne("").sum())
                 r2 = _share_input("r2", n2, "r2") if level2 else 1.0
             relevance = mk.Relevance(n1, r1, n2, r2, level2)
-            st.info(f"Combined relevance = r1 × r2 = {r1:.4f} × {r2 if level2 else 1:.4f} = **{relevance.combined:.4f}**")
+            if represents_exact:
+                st.caption(f"Relevance r1 × r2 = {relevance.combined:.4f} (not applied: HS codes are the exact "
+                           "opportunity).")
+            else:
+                st.info(f"Combined relevance = r1 × r2 = {r1:.4f} × {r2 if level2 else 1:.4f} = "
+                        f"**{relevance.combined:.4f}**")
 
-        market = mk.market_result(stats_a, stats_b, relevance)
         st.subheader("Market size result")
-        if market.found:
-            u = "USD m" if market.unit.startswith("USD") else "kt"
-            how = ("exact opportunity figures" if market.method == "exact"
-                   else f"base material × relevance {relevance.combined:.4f}")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric(f"Estimated market, used ({u})", f"{market.estimate:,.1f}", help=how)
-            m2.metric(f"Range, min – max ({u})", f"{market.low:,.1f} – {market.high:,.1f}")
-            m3.metric(f"Average of all figures ({u})",
-                      f"{market.average_all:,.1f}" if market.average_all is not None else "–")
-            m4.metric("Method", "Exact" if market.method == "exact" else "Derived")
-            st.caption(f"Reference year {ref_year}. Method: {how}.")
-        else:
-            st.warning("No market size established yet (neither the exact opportunity nor the base material has a "
-                       "usable Mexico figure).")
+        result_box = st.container()  # filled after tab 2, which provides the import data
 
     # ------------------------------------------------------------------ #
     trade_rec = None
@@ -1102,6 +1138,14 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
                 r3c.metric("Recurrence", trade_rec.strength)
 
     # ------------------------------------------------------------------ #
+    rel_factor = 1.0 if represents_exact else relevance.combined
+    trade_mkt = (mk.trade_market(trade_out["summary"], trade_rec.years, rel_factor, basis, trade_out["unit"])
+                 if trade_rec is not None else None)
+    market = mk.market_result(stats_a, trade_mkt, None if represents_exact else relevance)
+    with result_box:
+        _market_result_block(market, trade_mkt, ref_year, represents_exact, relevance)
+
+    # ------------------------------------------------------------------ #
     verdict = mk.recurring_demand_verdict(market, trade_rec)
     with t3:
         banner = {mk.ESTABLISHED: st.success, mk.NOT_ESTABLISHED: st.error, mk.PENDING: st.info}.get(
@@ -1112,13 +1156,17 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             ("Opportunity", name or "–"),
             ("Vertical", st.session_state.get("opp_vertical", "")),
             ("Immediate base material", base or "–"),
-            ("Market size method", {"exact": "Exact opportunity figures", "derived": "Base material × relevance",
-                                    "none": "Not found"}[market.method]),
-            ("Estimated market (used)", f"{market.estimate:,.1f} {market.unit}" if market.found else "–"),
-            ("Market range (min – max)", f"{market.low:,.1f} – {market.high:,.1f} {market.unit}" if market.found else "–"),
-            ("Average of all figures", f"{market.average_all:,.1f} {market.unit}"
-             if market.found and market.average_all is not None else "–"),
-            ("Relevance (r1 × r2)", f"{relevance.combined:.4f}" if market.method == "derived" else "–"),
+            ("Market size method", mk.METHOD_TEXT[market.method]),
+            ("Market size used" if market.method == "exact" else f"Minimum market size, {trade_mkt.latest_year}"
+             if market.method == "trade" else "Market size used",
+             f"{market.estimate:,.1f} {market.unit}" if market.found else "–"),
+            ("Range, min – max" + (" (last 5 complete years)" if market.method == "trade" else ""),
+             f"{market.low:,.1f} – {market.high:,.1f} {market.unit}" if market.found else "–"),
+            ("Average" + (" of the 5 years" if market.method == "trade" else " of all figures"),
+             f"{market.average_all:,.1f} {market.unit}" if market.found and market.average_all is not None else "–"),
+            ("Import basis", mk.BASIS_TEXT[basis] if market.method == "trade" else "–"),
+            ("Relevance (r1 × r2)", (f"{relevance.combined:.4f}" if not represents_exact else "1 (exact HS code)")
+             if market.method == "trade" else "–"),
             ("HS codes", hs_codes),
             ("HS codes represent", st.session_state.get("hs_represents", HS_BASE) if trade_out else "–"),
             ("Trade years assessed", ", ".join(map(str, trade_rec.years)) if trade_rec and trade_rec.years else "–"),
@@ -1131,20 +1179,18 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         st.dataframe(evidence_df, hide_index=True, width="stretch", height=36 * (len(evidence_df) + 1) + 4,
                      column_config={"Value": st.column_config.TextColumn(width="large")})
 
-        # Cross-check: imports should not exceed the market they belong to.
-        if market.found and market.unit.startswith("USD") and trade_rec and trade_rec.years:
-            last = trade_rec.years[-1]
-            imports_m = float(trade_out["summary"].loc[last, "imports"]) / 1e6
-            represents_base = st.session_state.get("hs_represents") == HS_BASE
-            compare_to = (market.stats.used if (represents_base and market.method == "derived")
-                          else market.estimate)
-            label = "base-material market" if represents_base and market.method == "derived" else "estimated market"
-            if compare_to and imports_m > compare_to:
-                st.warning(f"Cross-check: {last} imports ({imports_m:,.1f} USD m) exceed the {label} "
-                           f"({compare_to:,.1f} USD m). The market-size figures may be too low or not comparable.")
-            elif compare_to:
-                st.caption(f"Cross-check: {last} imports are {imports_m:,.1f} USD m, "
-                           f"{imports_m / compare_to:.0%} of the {label} ({compare_to:,.1f} USD m).")
+        # Cross-check (exact figures only): a report figure below the import-based minimum is suspect.
+        if market.method == "exact" and trade_mkt is not None and trade_mkt.found \
+                and market.unit == trade_mkt.unit:
+            floor, yr = trade_mkt.estimate, trade_mkt.latest_year
+            if market.estimate < floor:
+                st.warning(f"Cross-check: the exact-opportunity market used ({market.estimate:,.1f} {market.unit}) is "
+                           f"below the minimum implied by {yr} imports ({floor:,.1f} {market.unit}, "
+                           f"{mk.BASIS_TEXT[basis]} × relevance). The report figures may be too low or narrower in "
+                           "scope; consider other sources.")
+            else:
+                st.caption(f"Cross-check: the exact-opportunity market used is above the import-based minimum for "
+                           f"{yr} ({floor:,.1f} {market.unit}), as expected.")
 
     # ------------------------------------------------------------------ #
     with t_om:
@@ -1183,7 +1229,11 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
             "opportunity": name, "vertical": st.session_state.get("opp_vertical", ""), "base_material": base,
             "hs_represents": st.session_state.get("hs_represents", HS_BASE),
-            "figures": {STEP_1A: edited_a.to_dict("records"), STEP_1B: edited_b.to_dict("records")},
+            "figures": {STEP_1A: edited_a.to_dict("records")},
+            "import_basis": basis,
+            "market": {"method": market.method, "estimate": market.estimate, "low": market.low,
+                       "high": market.high, "average": market.average_all, "unit": market.unit,
+                       "year": trade_mkt.latest_year if market.method == "trade" else None},
             "categories": cats.to_dict("records"),
             "products": prods.to_dict("records"),
             "rationale": wf["rationale"], "register": wf["register"], "consulted": wf["consulted"],
@@ -1203,8 +1253,9 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             pd.DataFrame([("Verdict", f"{verdict.icon} {verdict.headline}"), ("Detail", verdict.detail)]
                          + evidence, columns=["Item", "Value"]).to_excel(writer, sheet_name="Result", index=False)
-            for s, df_ in ((STEP_1A, edited_a), (STEP_1B, edited_b)):
-                df_.to_excel(writer, sheet_name=f"Figures {s[:2]}", index=False)
+            edited_a.to_excel(writer, sheet_name="Figures 1A", index=False)
+            if trade_mkt is not None:
+                trade_mkt.table.to_excel(writer, sheet_name="Minimum market 1B")
             cats.to_excel(writer, sheet_name="Relevance L1", index=False)
             prods.to_excel(writer, sheet_name="Relevance L2", index=False)
             if trade_rec is not None:
@@ -1258,6 +1309,10 @@ else:
         wf_ref_year = st.number_input("Market-size reference year", 2015, 2100, dt.date.today().year - 1,
                                       key="wf_ref_year",
                                       help="Figures for other years are moved to this year with their own CAGR.")
+        basis_label = st.radio(
+            "Import basis for the minimum market (step 1B)", list(BASIS_OPTIONS), key="wf_basis",
+            help="Net imports are a strict floor for the market (consumption = production + imports − exports). "
+            "Gross imports are larger but also count material that is processed and re-exported (e.g. IMMEX).")
         fx_rates, fx_date = load_fx()
         with st.expander("FX rates (units per 1 USD)"):
             st.caption(f"ECB reference rates of {fx_date}." if fx_date else
@@ -1292,4 +1347,4 @@ else:
                                 help="Store it in the app's Secrets as ANTHROPIC_API_KEY.")
             researcher = ai.ClaudeResearcher(key) if key else None
             st.caption(f"Model: {ai.MODEL} with web search. Each AI search uses API credits.")
-    recurring_demand_workflow(researcher, fx_rates, int(wf_ref_year), int(wf_min_years))
+    recurring_demand_workflow(researcher, fx_rates, int(wf_ref_year), int(wf_min_years), BASIS_OPTIONS[basis_label])
