@@ -21,19 +21,26 @@ The app opens on **Recurring-demand workflow**. The original analysis is under
 
 | Tab | What happens |
 |---|---|
-| **1 · Opportunity & market size** | Enter the opportunity, vertical and immediate base material. **1A**: Mexico market-size figures for the exact opportunity, found by AI web search or entered manually. **1B**, only if 1A has no usable Mexico figure: the **minimum market** = imports of tab 2's HS codes in the latest complete year × relevance (r1 = 1 / number of categories, r2 = 1 / number of parallel products; both can be overridden). Market reports for the base material are not used. |
-| **2 · Trade recurrence** | The same HS search, charts and export as the Trade explorer. Recurrence uses the **last 5 complete years only**: recurring if imports appear in at least 4 of 5 (adjustable); strength **High** if net imports are positive in all 5, otherwise **Moderate**. |
-| **3 · Recurring-demand result** | Market found + recurring → ✅ established. Market found only → ⚠️ recurrence not evidenced. Trade only → ⚠️ established from trade (lower confidence). Neither → ❌ *The recurring demand could not be established.* Includes an imports-vs-market cross-check. |
-| **4 · Open market** | Import trend, supplier-country HHI and a competitor scan for the exact opportunity (see below). |
+| **1 · Recurring demand** | The conclusion sits at the top: Yes/No, the approximate market size, and how many of the last 5 complete years had imports. The three steps below it set the market size. The first step that applies is used, and the later ones are skipped. |
+| **2 · Open market** | Import trend, supplier-country HHI and a competitor scan for the exact opportunity (see below). |
 | **🔒 Market sources** | Append-only register of every figure found or entered and of every competitor found. Edits are logged as new entries and nothing can be deleted. Also lists the pages each AI search consulted, an Excel report, and save/load of the whole assessment (JSON). |
 
-How market sizes are calculated:
-- **1A, exact opportunity (reports).** Minimum, maximum, average of all Mexico figures, average of the selected figures, and the value used (the selected average, or the average of all when none are selected). Values are converted to USD million at live ECB rates (editable in the sidebar) and moved to the reference year using each source's own CAGR. Volume figures (kt) are kept separate from value figures. Non-Mexico figures are shown but left out unless selected.
-- **1B, minimum market from imports.** Mexico's apparent consumption = production + imports − exports, and production can't be negative, so **net imports are a floor for the market**; value added after import and domestic production only make it larger. The app uses net imports of the latest complete year × relevance (r1 × r2, or 1 when tab 2's HS codes are the exact opportunity), and shows the 5-year range and average. The sidebar can switch the basis to **gross imports**, which is larger but also counts material processed and re-exported (e.g. under IMMEX). If the basis isn't positive in the latest year, no market size is set from trade.
-- **Cross-check (1A only).** If the exact-opportunity figure is below the import-based minimum, tab 3 warns that the reports may be too low or narrower in scope.
+The three steps in tab 1:
 
-How the open-market check works (tab 4):
-- **Import trend.** Uses the same HS codes as tab 2 and the last 5 complete years. It uses volume when the cube has a quantity measure, otherwise value. The trend is a Theil–Sen line (the median of all pairwise slopes), so a single spike year can't decide it. Above +2%/yr is **Growing**, −2% to +2% is **Stable**, below −2% is **Declining**.
+| Step | Applies when | Approximate market size |
+|---|---|---|
+| **1 · Import data of the exact opportunity** | The opportunity has its own HS code and its net imports are positive in the latest complete year | Net imports of that code |
+| **2 · Market reports of the exact opportunity** | Step 1 doesn't apply and at least one usable Mexico figure exists (AI search or manual entry) | Average of the selected reports (or of all Mexico figures if none is selected) |
+| **3 · Import data of the immediate base material × relevance** | Steps 1 and 2 don't apply | Base material's net imports × r1 × r2 (r1 = 1 / number of categories, r2 = 1 / number of parallel products; both can be overridden, or suggested by AI) |
+
+- **Recurrence check.** Uses the import data of the step that gave the market size. On the Step 2 path it uses the exact code's imports if they were fetched; otherwise only Step 3a (the base material's HS codes) is needed, and no relevance.
+- **"Yes" rule.** A market size from Steps 1–3 AND imports in at least 4 of the last 5 complete years (adjustable in the sidebar). The sentence also says how many years Mexico was a net importer, and when it was a net exporter.
+- **Net or gross imports.** Net imports (imports − exports) are the default; the sidebar can switch Steps 1 and 3 to gross imports. If the latest year's figure isn't positive, that step can't give a market size: an exact code then moves on to Step 2.
+- **Why "approximate".** Trade data leaves out domestic production and the value added after import.
+- **Report figures (Step 2).** Converted to USD million at live ECB rates (editable in the sidebar) and moved to the reference year using each source's own CAGR. Volume figures (kt) are kept separate from value figures. Non-Mexico figures are shown but left out unless selected.
+
+How the open-market check works (tab 2):
+- **Import trend.** Uses the HS codes from tab 1 (the exact code from Step 1 if fetched, otherwise the base material's from Step 3a) and the last 5 complete years. It uses volume when the cube has a quantity measure, otherwise value. The trend is a Theil–Sen line (the median of all pairwise slopes), so a single spike year can't decide it. Above +2%/yr is **Growing**, −2% to +2% is **Stable**, below −2% is **Declining**.
 - **HHI by year.** Supplier-country concentration with its 5-year direction. It is a note only and never changes the result.
 - **Competitors.** Companies, domestic or international, that supply the *exact opportunity* in Mexico. Companies that only sell the base material are not counted. Subsidiaries of one group count once. 4 or more groups means the market is fragmented.
 

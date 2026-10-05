@@ -70,28 +70,38 @@ def test_trade_market_is_net_imports_times_relevance():
     tm = m.trade_market(summary, list(range(2019, 2024)), rel.combined)
     assert tm.unit == "USD million" and tm.latest_year == 2023
     assert tm.estimate == pytest.approx(1500 * 0.05)          # 2023 net imports 1,500 m × 0.05
-    assert (tm.low, tm.high) == (pytest.approx(45), pytest.approx(75))
-    res = m.market_result(None, tm, rel)
-    assert res.method == "trade" and res.estimate == pytest.approx(75) and res.trade is tm
+    res = m.market_result(None, None, tm, rel)
+    assert res.method == m.BASE_HS and res.estimate == pytest.approx(75) and res.year == 2023
     gross = m.trade_market(summary, list(range(2019, 2024)), rel.combined, m.GROSS)
     assert gross.estimate == pytest.approx(2000 * 0.05)
 
 
-def test_trade_market_exact_hs_and_net_exporter():
+def test_net_exporter_gives_no_trade_size():
     summary = _summary([100e6, 100e6], [50e6, 150e6])
     tm = m.trade_market(summary, [2019, 2020], 1.0)
     assert tm.estimate is None and "not positive" in tm.note
-    assert tm.low == tm.high == pytest.approx(50)            # 2019 still shown in the range
-    assert m.market_result(None, tm).method == "none"
+    assert m.market_result(tm, None, None).method == m.NONE
     assert m.trade_market(summary, [2019], 1.0).estimate == pytest.approx(50)
 
 
-def test_exact_market_takes_precedence():
-    exact = m.market_stats(m.normalize(_figs({"amount": 40, "unit": "USD million", "year": 2025,
-                                              "geography": "Mexico"}), FX, 2025), "value")
-    tm = m.trade_market(_summary([1e9], [0]), [2019], 0.04)
-    res = m.market_result(exact, tm, m.Relevance(5, 0.2, 5, 0.2))
-    assert res.method == "exact" and res.estimate == 40 and res.trade is tm
+def _reports(amount):
+    return m.market_stats(m.normalize(_figs({"amount": amount, "unit": "USD million", "year": 2025,
+                                             "geography": "Mexico"}), FX, 2025), "value")
+
+
+def test_step_priority_exact_hs_then_reports_then_base():
+    exact = m.trade_market(_summary([90e6], [10e6]), [2019], 1.0)
+    base = m.trade_market(_summary([1e9], [0]), [2019], 0.04)
+    rel = m.Relevance(5, 0.2, 5, 0.2)
+    assert m.market_result(exact, _reports(40), base, rel).method == m.EXACT_HS
+    assert m.market_result(exact, _reports(40), base, rel).estimate == pytest.approx(80)
+    res = m.market_result(None, _reports(40), base, rel, ref_year=2025)
+    assert (res.method, res.estimate, res.year) == (m.REPORTS, 40, 2025)
+    assert m.market_result(None, None, base, rel).estimate == pytest.approx(40)
+    assert m.market_result(None, None, base, None).method == m.NONE   # relevance not set yet
+    # Gap 2: an exact code with net exports falls through to the reports
+    net_exporter = m.trade_market(_summary([10e6], [50e6]), [2019], 1.0)
+    assert m.market_result(net_exporter, _reports(40), base, rel).method == m.REPORTS
 
 
 def _summary(imports, exports, start=2019):
@@ -122,18 +132,40 @@ def test_trade_not_recurring():
 
 @pytest.mark.parametrize("market_found,recurring,code", [
     (True, True, m.ESTABLISHED),
-    (True, False, m.NOT_RECURRING),
-    (False, True, m.TRADE_ONLY),
+    (True, False, m.NOT_ESTABLISHED),
+    (False, True, m.NOT_ESTABLISHED),
     (False, False, m.NOT_ESTABLISHED),
 ])
 def test_verdict_matrix(market_found, recurring, code):
-    market = m.MarketResult("exact" if market_found else "none", None, None,
-                            10.0 if market_found else None, None, None, None)
+    market = m.MarketResult(m.REPORTS if market_found else m.NONE, 120.0 if market_found else None,
+                            "USD million", 2025)
     s = _summary([10] * 5 if recurring else [0] * 5, [0] * 5)
-    v = m.recurring_demand_verdict(market, m.trade_recurrence(s, list(range(2019, 2024))))
+    v = m.recurring_demand_verdict(market, m.trade_recurrence(s, list(range(2019, 2024))), "MFPP",
+                                   "Polypropylene", "2025, average of 3 market reports")
     assert v.code == code
-    if code == m.NOT_ESTABLISHED:
-        assert v.headline == "The recurring demand could not be established."
+    if code == m.ESTABLISHED:
+        assert v.headline == "Yes — the demand for MFPP in Mexico is recurring"
+        assert "Approximate market size: USD 120.0 m (2025, average of 3 market reports)" in v.detail
+        assert "imported in 5 of the last 5 complete years (2019–2023) and net imported in 5" in v.detail
+    else:
+        assert v.headline == "No — The recurring demand could not be established."
+    if not market_found:
+        assert "no market size could be found in Steps 1–3" in v.detail
+
+
+def test_verdict_mentions_net_exports():
+    market = m.MarketResult(m.REPORTS, 120.0, "USD million", 2025)
+    s = _summary([10] * 5, [5, 20, 20, 5, 5])
+    v = m.recurring_demand_verdict(market, m.trade_recurrence(s, list(range(2019, 2024))), "MFPP", "PP", "d")
+    assert v.code == m.ESTABLISHED and "net exporter in 2 of the 5 years" in v.detail
+
+
+def test_size_detail_and_format():
+    tm = m.trade_market(_summary([1e9], [0]), [2019], 0.05)
+    res = m.market_result(None, None, tm, m.Relevance(4, 0.25, 5, 0.2))
+    assert m.size_detail(res, base="Polypropylene") == \
+        "2019, net imports (imports − exports) of Polypropylene × relevance 0.0500"
+    assert m.fmt_size(2157.4, "USD million") == "USD 2.16 bn"
 
 
 def test_verdict_pending_without_trade():

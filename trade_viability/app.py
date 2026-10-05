@@ -214,8 +214,15 @@ with st.sidebar:
 mode = theme_mode()
 
 
-def trade_section(step: str = "", default_query: str = "", show_viability: bool = True):
-    """HS search -> basket -> trade data, charts and export. Returns the trade results or None."""
+def trade_section(step: str = "", default_query: str = "", show_viability: bool = True, ns: str = "",
+                  heading: str = "Find HS codes for a material"):
+    """HS search -> basket -> trade data, charts and export. Returns the trade results or None.
+
+    ``ns`` prefixes every widget and state key, so several independent sections can share a page.
+    """
+
+    def k(name: str) -> str:
+        return f"{ns}{name}"
 
     def num(n: int) -> str:
         return f"{step}.{n}" if step else str(n)
@@ -224,7 +231,7 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
     # ---------------------------------------------------------------------- #
     # Step 1: search HS codes
     # ---------------------------------------------------------------------- #
-    st.subheader(f"{num(1)} · Find HS codes for a material")
+    st.subheader(f"{num(1)} · {heading}")
     with st.spinner("Loading the HS product catalogue…"):
         try:
             hs_catalog, urls = load_hs(base_url, cube_name, locale)
@@ -234,17 +241,17 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
             return None
 
     c1, c2, c3 = st.columns([3, 2, 1.2])
-    if default_query and st.session_state.get("_hs_default") != default_query:
-        st.session_state.hs_query = default_query  # prefill when the opportunity/base material changes
-        st.session_state._hs_default = default_query
-    query = c1.text_input("Material name or HS code", key="hs_query", placeholder="e.g. toluene, propylene, tolueno, 2902, 2902.30")
+    if default_query and st.session_state.get(k("_hs_default")) != default_query:
+        st.session_state[k("hs_query")] = default_query  # prefill when the opportunity/base material changes
+        st.session_state[k("_hs_default")] = default_query
+    query = c1.text_input("Material name or HS code", key=k("hs_query"), placeholder="e.g. toluene, propylene, tolueno, 2902, 2902.30")
     levels = c2.multiselect("HS levels", list(hs_catalog), default=[d for d in (4, 6) if d in hs_catalog] or list(hs_catalog),
-                            format_func=lambda d: HS_LABEL.get(d, f"HS{d}"))
+                            format_func=lambda d: HS_LABEL.get(d, f"HS{d}"), key=k("levels"))
     use_curated = c3.checkbox("Use synonyms", value=True,
                               help="Adds known HS6 codes for common petrochemical names "
-                              "(e.g. propylene → 2901.22 and 2711.14).")
+                              "(e.g. propylene → 2901.22 and 2711.14).", key=k("curated"))
 
-    basket: dict[str, HSEntry] = st.session_state.setdefault("basket", {})
+    basket: dict[str, HSEntry] = st.session_state.setdefault(k("basket"), {})
 
     if query:
         results = search(hs_catalog, query, levels=levels, use_curated=use_curated)
@@ -261,11 +268,12 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
             st.caption(f"{len(results)} matches. Select rows, then add them to the analysis.")
             event = st.dataframe(
                 table, hide_index=True, on_select="rerun", selection_mode="multi-row",
-                key=f"results_{query}_{locale}", height=min(420, 38 + 35 * len(table)),
+                key=k(f"results_{query}_{locale}"), height=min(420, 38 + 35 * len(table)),
                 column_config={"Description (Data México)": st.column_config.TextColumn(width="large")},
             )
             picked = [results[i] for i in event.selection.rows]
-            if st.button(f"Add {len(picked)} selected code(s) to analysis", type="primary", disabled=not picked):
+            if st.button(f"Add {len(picked)} selected code(s) to analysis", type="primary", disabled=not picked,
+                         key=k("add")):
                 for e in picked:
                     basket[entry_key(e)] = e
                 st.rerun()
@@ -280,9 +288,9 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
 
     keys_in_basket = list(basket)
     kept = st.multiselect("Selected HS codes (remove with ×)", keys_in_basket, default=keys_in_basket,
-                          format_func=lambda k: entry_name(basket[k]))
+                          format_func=lambda key: entry_name(basket[key]), key=k("kept"))
     if set(kept) != set(keys_in_basket):
-        st.session_state.basket = {k: basket[k] for k in kept}
+        st.session_state[k("basket")] = {key: basket[key] for key in kept}
         st.rerun()
 
     for parent, child in overlapping(basket.values()):
@@ -290,14 +298,14 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
                    f"its trade. Remove one of them.")
 
     b1, b2 = st.columns([1, 5])
-    if b1.button("Fetch trade data", type="primary"):
-        st.session_state.show_results = True
-    if b2.button("Clear selection"):
-        st.session_state.basket = {}
-        st.session_state.show_results = False
+    if b1.button("Fetch trade data", type="primary", key=k("fetch")):
+        st.session_state[k("show_results")] = True
+    if b2.button("Clear selection", key=k("clear")):
+        st.session_state[k("basket")] = {}
+        st.session_state[k("show_results")] = False
         st.rerun()
 
-    if not st.session_state.get("show_results"):
+    if not st.session_state.get(k("show_results")):
         return None
 
     # ---------------------------------------------------------------------- #
@@ -398,8 +406,8 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
 
     # ---- Trend ----------------------------------------------------------- #
     with tab["Trend"]:
-        st.plotly_chart(charts.trade_trend(summary, partial, unit, mode), key="trend")
-        st.plotly_chart(charts.net_imports(summary.loc[complete] if complete else summary, set(), unit, mode), key="net")
+        st.plotly_chart(charts.trade_trend(summary, partial, unit, mode), key=k("trend"))
+        st.plotly_chart(charts.net_imports(summary.loc[complete] if complete else summary, set(), unit, mode), key=k("net"))
         st.caption("Net imports are shown for complete years only.")
         with st.expander("Table"):
             show = summary[["imports", "exports", "net_imports", "imports_yoy", "exports_yoy"]].copy()
@@ -414,7 +422,7 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
         order = list(by_hs.groupby("product")["value"].sum().sort_values(ascending=False).index)
         for flow in (IMPORTS, EXPORTS):
             st.plotly_chart(charts.stacked_by(by_hs, "product", flow, years, partial, unit,
-                                              f"{flow} by HS code", mode, order=order), key=f"hs_{flow}")
+                                              f"{flow} by HS code", mode, order=order), key=k(f"hs_{flow}"))
         with st.expander("Table"):
             pivot = by_hs.pivot_table(index=["product", "flow"], columns="year", values="value", aggfunc="sum").fillna(0)
             st.dataframe(pivot.style.format("{:,.0f}"))
@@ -424,12 +432,12 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
         if by_country is None or by_country.empty:
             st.info("This cube has no partner-country breakdown.")
         else:
-            flow = st.radio("Flow", [IMPORTS, EXPORTS], horizontal=True, key="country_flow",
+            flow = st.radio("Flow", [IMPORTS, EXPORTS], horizontal=True, key=k("country_flow"),
                             format_func=lambda f: "Imports by origin" if f == IMPORTS else "Exports by destination")
             st.plotly_chart(charts.stacked_by(by_country, "country", flow, years, partial, unit,
-                                              f"{flow} by partner country", mode), key="country_stack")
+                                              f"{flow} by partner country", mode), key=k("country_stack"))
             pick_years = complete or years
-            year = st.select_slider("Year", options=pick_years, value=pick_years[-1], key="country_year")
+            year = st.select_slider("Year", options=pick_years, value=pick_years[-1], key=k("country_year"))
             conc = concentration(by_country, "country", year, flow)
             if conc:
                 m1, m2, m3, m4 = st.columns(4)
@@ -442,7 +450,7 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
                           "Below 1,500 unconcentrated; above 2,500 highly concentrated.")
                 st.plotly_chart(charts.ranking_bar(conc.shares, "partner", "value", unit,
                                                    f"{flow} by partner country, {year}", mode, share_col="share"),
-                                key="country_rank")
+                                key=k("country_rank"))
             with st.expander("Table"):
                 st.dataframe(by_country.pivot_table(index=["country", "flow"], columns="year", values="value",
                                                     aggfunc="sum").fillna(0).style.format("{:,.0f}"))
@@ -455,9 +463,9 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
             st.caption(f"Source cube: `{state_cube}`. State-level data only include trade Data México "
                        "could attribute to a state, so totals can be lower than the national figures "
                        "in the other tabs.")
-            flow = st.radio("Flow", [IMPORTS, EXPORTS], horizontal=True, key="state_flow")
+            flow = st.radio("Flow", [IMPORTS, EXPORTS], horizontal=True, key=k("state_flow"))
             pick_years = complete or years
-            year = st.select_slider("Year", options=pick_years, value=pick_years[-1], key="state_year")
+            year = st.select_slider("Year", options=pick_years, value=pick_years[-1], key=k("state_year"))
             sub = by_state[(by_state["year"] == year) & (by_state["flow"] == flow)]
             table = sub.groupby("state", as_index=False)["value"].sum()
             table = table[table["value"] > 0]
@@ -466,7 +474,7 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
             else:
                 table["share"] = table["value"] / table["value"].sum()
                 st.plotly_chart(charts.ranking_bar(table, "state", "value", unit, f"{flow} by state, {year}",
-                                                   mode, share_col="share", top=32), key="state_rank")
+                                                   mode, share_col="share", top=32), key=k("state_rank"))
             with st.expander("Table"):
                 st.dataframe(by_state.pivot_table(index=["state", "flow"], columns="year", values="value",
                                                   aggfunc="sum").fillna(0).style.format("{:,.0f}"))
@@ -484,7 +492,7 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
                              expanded=False):
                 st.caption(f"Enter Mexican production per year in the same unit as the measure ({unit or 'measure unit'}), "
                            "e.g. from ANIQ's Anuario. Apparent consumption = production + imports − exports.")
-                prod_key = "production_" + "_".join(f"{d}-{m}" for d, m in keys)
+                prod_key = k("production_") + "_".join(f"{d}-{m}" for d, m in keys)
                 prod_df = st.data_editor(
                     pd.DataFrame({"year": years, "production": [None] * len(years)}).astype({"production": "float"}),
                     hide_index=True, disabled=["year"], key=prod_key,
@@ -538,7 +546,7 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
         st.markdown("**Check totals across cubes**")
         st.caption("Imports and exports of the selected codes in every detected trade cube. "
                    "Use the cube whose totals match Data México's published figures.")
-        if st.button("Compare cubes"):
+        if st.button("Compare cubes", key=k("compare")):
             with st.spinner("Querying every trade cube…"):
                 comparison = load_comparison(base_url, keys, tuple(entry_name(e) for e in basket.values()), locale)
             if comparison.empty:
@@ -563,9 +571,10 @@ def trade_section(step: str = "", default_query: str = "", show_viability: bool 
         stem = "_".join(format_code(e.code) for e in basket.values())[:60]
         d1, d2 = st.columns(2)
         d1.download_button("Download Excel workbook", buffer.getvalue(), file_name=f"mexico_trade_{stem}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary",
+                           key=k("dl_xlsx"))
         d2.download_button("Download yearly summary (CSV)", full_summary.to_csv().encode(),
-                           file_name=f"mexico_trade_{stem}.csv", mime="text/csv")
+                           file_name=f"mexico_trade_{stem}.csv", mime="text/csv", key=k("dl_csv"))
 
         st.markdown("**Raw rows by HS code**")
         st.dataframe(by_hs, hide_index=True)
@@ -761,13 +770,17 @@ def _share_input(label: str, n: int, key: str) -> float:
     return share
 
 
+def _basket_records(key: str) -> list[dict]:
+    return [{"digits": e.digits, "member_id": e.member_id, "code": e.code, "label": e.label,
+             "parent_label": e.parent_label} for e in st.session_state.get(key, {}).values()]
+
+
 def _apply_loaded(data: dict) -> None:
     """Restore a saved workflow (JSON from the Market sources tab)."""
     wf = _wf_state()
     st.session_state["opp_name"] = data.get("opportunity", "")
     st.session_state["opp_vertical"] = data.get("vertical", VERTICALS[0])
     st.session_state["opp_base"] = data.get("base_material", "")
-    st.session_state["hs_represents"] = data.get("hs_represents", HS_BASE)
     for step in (STEP_1A,):
         wf["figs"][step] = mk.figures_frame(data.get("figures", {}).get(step, []))
         wf["ver"][step] += 1
@@ -784,12 +797,20 @@ def _apply_loaded(data: dict) -> None:
     wf["comp_register"] = list(data.get("competitor_register", []))
     wf["comp_scan_done"] = bool(data.get("competitor_scan_done", False))
     st.session_state["om_none_confirmed"] = bool(data.get("no_supplier_confirmed", False))
-    st.session_state.basket = {
-        f"{b['digits']}:{b['member_id']}": HSEntry(digits=int(b["digits"]), member_id=str(b["member_id"]),
-                                                   code=b.get("code", ""), label=b.get("label", ""),
-                                                   parent_label=b.get("parent_label", ""))
-        for b in data.get("hs_codes", [])
-    }
+    if "hs_codes_exact" in data or "hs_codes_base" in data:
+        exact, base_codes = data.get("hs_codes_exact", []), data.get("hs_codes_base", [])
+        st.session_state["no_exact_hs"] = bool(data.get("no_exact_hs", False))
+    else:  # saved before the one-tab workflow: one basket, flagged exact or base material
+        legacy_exact = data.get("hs_represents") == HS_EXACT
+        exact, base_codes = (data.get("hs_codes", []), []) if legacy_exact else ([], data.get("hs_codes", []))
+        st.session_state["no_exact_hs"] = not legacy_exact
+    for key, records in (("ex_basket", exact), ("base_basket", base_codes)):
+        st.session_state[key] = {
+            f"{b['digits']}:{b['member_id']}": HSEntry(digits=int(b["digits"]), member_id=str(b["member_id"]),
+                                                       code=b.get("code", ""), label=b.get("label", ""),
+                                                       parent_label=b.get("parent_label", ""))
+            for b in records
+        }
 
 
 
@@ -818,23 +839,23 @@ def _load_quantity(base_url_: str, cube: str, keys: tuple, measure: str, locale_
     return df
 
 
-def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> dict:
+def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher, exact_hs: bool) -> dict:
     """Open-market check: import trend, HHI, competitor scan and verdict."""
     mode_ = theme_mode()
     out = {"verdict": None, "evidence": [], "trend_table": None, "hhi_table": None, "comp_fps": [],
            "companies": om.empty_companies()}
-    exact_hs = st.session_state.get("hs_represents", HS_BASE) == HS_EXACT
-    st.caption("Uses the same HS codes as step 2. "
+    st.caption("Uses the HS codes from tab 1 (the exact opportunity's if Step 1 has them, otherwise the base "
+               "material's). "
                + ("They are the **exact opportunity's** codes: imports alone decide the result; the competitor scan "
                   "is optional evidence." if exact_hs else
                   "They are the **base material's** codes: the competitor scan for the exact opportunity is "
                   "required."))
 
     # ---- Step 1: import trend ------------------------------------------
-    st.subheader("4.1 · Import trend (last 5 complete years)")
+    st.subheader("2.1 · Import trend (last 5 complete years)")
     trend = None
     if trade_out is None:
-        st.info("Select HS codes and fetch trade data in tab 2 first.")
+        st.info("Fetch the import data in tab 1 first (Step 1 or Step 3a).")
     else:
         series = trade_out["summary"]["imports"]
         measure_used, unit_used = measure, trade_out["unit"]
@@ -870,7 +891,7 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> d
                                            "trend line": trend.trend_line})
 
     # ---- Step 2: HHI ------------------------------------------------------
-    st.subheader("4.2 · Supplier-country concentration (HHI) - note only")
+    st.subheader("2.2 · Supplier-country concentration (HHI) - note only")
     hhi = None
     if trade_out is not None and trend is not None and trend.years:
         hhi = om.hhi_series(trade_out.get("by_country"), trend.years)
@@ -882,7 +903,7 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> d
             out["hhi_table"] = hhi.table
 
     # ---- Step 3: competitors ----------------------------------------------
-    st.subheader("4.3 · Competitors supplying the exact opportunity in Mexico"
+    st.subheader("2.3 · Competitors supplying the exact opportunity in Mexico"
                  + (" (optional)" if exact_hs else " (required)"))
     st.caption(f"Any domestic or international company selling **{name or 'the opportunity'}** in Mexico counts; "
                "companies selling only the base material do not. Subsidiaries of one group count once; "
@@ -933,7 +954,7 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> d
         st.session_state["om_none_confirmed"] = False
 
     # ---- Step 4: verdict ---------------------------------------------------
-    st.subheader("4.4 · Open-market result")
+    st.subheader("2.4 · Open-market result")
     verdict = om.open_market_verdict(exact_hs, trend, n if wf["comp_scan_done"] else None, wf["comp_scan_done"],
                                      none_confirmed, hhi, name or "the opportunity")
     banner = {om.OPEN: st.success, om.NOT_OPEN: st.error, om.NO_MARKET: st.error, om.PENDING: st.info}.get(
@@ -956,43 +977,85 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher) -> d
     return out
 
 BASIS_TEXT_UI = {mk.NET: "net imports = imports − exports", mk.GROSS: "gross imports"}
+STEP1 = "Step 1 · Import data of the exact opportunity"
+STEP2 = "Step 2 · Market reports of the exact opportunity"
+STEP3 = "Step 3 · Import data of the immediate base material × relevance"
 
 
-def _market_result_block(market: mk.MarketResult, trade_mkt: mk.TradeMarket | None, ref_year: int,
-                         represents_exact: bool, relevance: mk.Relevance) -> None:
-    if market.method == "exact":
-        u = "USD m" if market.unit.startswith("USD") else "kt"
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(f"Market size used ({u})", f"{market.estimate:,.1f}", help=market.stats.basis)
-        m2.metric(f"Range, min – max ({u})", f"{market.low:,.1f} – {market.high:,.1f}")
-        m3.metric(f"Average of all figures ({u})",
-                  f"{market.average_all:,.1f}" if market.average_all is not None else "–")
-        m4.metric("Method", "Exact (reports)")
-        st.caption(f"Reference year {ref_year}. Method: exact-opportunity figures.")
-        return
-    if trade_mkt is None:
-        st.info("No exact-opportunity figure yet. Fetch trade data in tab 2 to get the minimum market from imports.")
-        return
-    rel_text = "1 (HS codes are the exact opportunity)" if represents_exact else f"{relevance.combined:.4f}"
-    u = "USD m" if trade_mkt.unit == "USD million" else trade_mkt.unit
-    if market.method == "trade":
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(f"Minimum market, {trade_mkt.latest_year} ({u})", f"{market.estimate:,.1f}",
-                  help="Latest complete year. A floor, not an estimate of the full market.")
-        m2.metric(f"Range over 5 years ({u})", f"{market.low:,.1f} – {market.high:,.1f}")
-        m3.metric(f"5-year average ({u})", f"{market.average_all:,.1f}")
-        m4.metric("Method", "From imports")
-        latest = trade_mkt.table.loc[trade_mkt.latest_year, "basis_value"]
-        st.caption(f"{trade_mkt.latest_year}: {mk.BASIS_TEXT[trade_mkt.basis]} {latest:,.1f} {u} × relevance "
-                   f"{rel_text} = **{market.estimate:,.1f} {u}** minimum. The real market is at least this large.")
-    else:
-        st.warning(trade_mkt.note or "No market size established yet.")
-    tbl = trade_mkt.table.rename(columns={"imports": f"imports ({u})", "exports": f"exports ({u})",
-                                          "net_imports": f"net imports ({u})",
-                                          "basis_value": f"basis: {mk.BASIS_TEXT[trade_mkt.basis]}",
-                                          "minimum_market": f"minimum market ({u})"})
-    with st.expander("Minimum market by year"):
+def _codes(out) -> str:
+    return ", ".join(format_code(e.code) for e in (out or {}).get("basket", []))
+
+
+def _trade_size_block(tm: mk.TradeMarket, label: str, rel_text: str = "") -> None:
+    """Approximate market size from imports, with the calculation by year."""
+    u = "USD m" if tm.unit == "USD million" else tm.unit
+    if tm.found:
+        latest = tm.table.loc[tm.latest_year, "basis_value"]
+        st.metric(f"Approximate market size, {tm.latest_year}", mk.fmt_size(tm.estimate, tm.unit))
+        st.caption(f"{tm.latest_year}: {mk.BASIS_TEXT[tm.basis]} of {label} = {latest:,.1f} {u}"
+                   + (f" × relevance {rel_text}" if rel_text else "")
+                   + f" ≈ **{mk.fmt_size(tm.estimate, tm.unit)}**. Approximate, because trade data leaves out "
+                   "domestic production and the value added after import.")
+    elif tm.note:
+        st.warning(tm.note)
+    tbl = tm.table.rename(columns={"imports": f"imports ({u})", "exports": f"exports ({u})",
+                                   "net_imports": f"net imports ({u})",
+                                   "basis_value": f"{mk.BASIS_TEXT[tm.basis]} ({u})",
+                                   "market_size": f"approximate market ({u})"})
+    with st.expander("Calculation by year"):
         st.dataframe(tbl.style.format("{:,.1f}"), width="stretch")
+
+
+def _relevance_editor(wf: dict, name: str, base: str, researcher):
+    """Two-level relevance (step 3b). Returns (relevance, categories, products, is_set)."""
+    if st.button("🔎 Suggest base material, categories and parallel products with AI",
+                 disabled=researcher is None or not name, key="ai_hier"):
+        with st.spinner("Researching the product structure (usually 1–2 minutes)…"):
+            try:
+                res = researcher.suggest_hierarchy(name, base)
+            except ai.AIResearchError as exc:
+                st.error(str(exc))
+                res = None
+        if res is not None:
+            d = res.data
+            wf["categories"] = pd.DataFrame({
+                "Category": d["categories"],
+                "Contains opportunity": [c == d.get("opportunity_category") for c in d["categories"]]})
+            wf["products"] = pd.DataFrame({
+                "Parallel product": d["products"],
+                "Is the opportunity": [p == d.get("opportunity_product") for p in d["products"]]})
+            wf["ver"]["cat"] += 1
+            wf["ver"]["prod"] += 1
+            wf["rationale"] = d.get("rationale", "")
+            _log_consulted(wf, "Relevance", d.get("base_material") or base,
+                           res.consulted + [s for s in d.get("sources", []) if isinstance(s, dict)])
+            if d.get("base_material") and not base:
+                st.session_state["_pending_base"] = d["base_material"]
+            st.session_state["_flash"] = (f"AI ({d.get('mode', researcher.provider)}) suggested the product "
+                                          "structure: review it in Step 3b.")
+            st.rerun()
+    if wf["rationale"]:
+        st.caption(f"AI rationale: {wf['rationale']}")
+    l1, l2 = st.columns(2)
+    with l1:
+        st.markdown(f"Level 1 · categories of {base or 'the base material'}")
+        cats = _list_editor(wf, "cat", "categories", "Category", "Contains opportunity")
+        n1 = int(cats["Category"].fillna("").astype(str).str.strip().ne("").sum())
+        r1 = _share_input("r1", n1, "r1")
+    with l2:
+        level2 = st.checkbox("Apply level 2 (parallel products)", value=True, key="level2")
+        st.markdown("Level 2 · parallel products within the opportunity's category")
+        prods = _list_editor(wf, "prod", "products", "Parallel product", "Is the opportunity")
+        n2 = int(prods["Parallel product"].fillna("").astype(str).str.strip().ne("").sum())
+        r2 = _share_input("r2", n2, "r2") if level2 else 1.0
+    relevance = mk.Relevance(n1, r1, n2, r2, level2)
+    is_set = n1 > 0 and (n2 > 0 or not level2)
+    if is_set:
+        st.info(f"Combined relevance = r1 × r2 = {r1:.4f} × {r2 if level2 else 1:.4f} = **{relevance.combined:.4f}**")
+    else:
+        st.warning("Add the categories (and parallel products) to set the relevance: type them in, or use the "
+                   "AI suggestion.")
+    return relevance, cats, prods, is_set
 
 
 def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: int, basis: str = mk.NET) -> None:
@@ -1007,9 +1070,8 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
     flash = st.session_state.pop("_flash", None)
 
     st.title("Opportunity viability")
-    st.caption("Recurring demand (tabs 1–3): market size in Mexico, imports recurring over the last 5 complete "
-               "years, and the conclusion. Open market (tab 4): import trend, supplier concentration and "
-               "competitors. Every source used is locked into the Market sources tab.")
+    st.caption("Tab 1 concludes whether the demand is recurring, with the approximate market size. Tab 2 checks "
+               "whether the market is open. Every source used is locked into the Market sources tab.")
     # Always present, so messages appearing or disappearing never shift the tabs
     # (a layout shift above st.tabs resets the selected tab).
     notice = st.container()
@@ -1018,183 +1080,164 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
     if st.session_state.get("_flash_error"):
         notice.error(st.session_state.pop("_flash_error"))
 
-    t1, t2, t3, t_om, t4 = st.tabs(["1 · Opportunity & market size", "2 · Trade recurrence",
-                                    "3 · Recurring-demand result", "4 · Open market", "🔒 Market sources"])
+    t1, t_om, t4 = st.tabs(["1 · Recurring demand", "2 · Open market", "🔒 Market sources"])
 
     # ------------------------------------------------------------------ #
     with t1:
+        conclusion_box = st.container()  # filled at the end, once every step has run
+
         st.subheader("Opportunity")
         c1, c2, c3 = st.columns([3, 2, 3])
         name = c1.text_input("Opportunity", key="opp_name", placeholder="e.g. Mineral-filled polypropylene")
         c2.selectbox("Vertical", VERTICALS, key="opp_vertical")
         base = c3.text_input("Immediate base material", key="opp_base", placeholder="e.g. Polypropylene",
-                             help="The material one step up the chain. Used when the exact opportunity has no "
-                             "Mexico market size or HS code.")
+                             help="The material one step up the chain. Used in Step 3 when the exact opportunity "
+                             "has neither its own HS code nor a market report.")
         if not name:
             st.info("Enter the opportunity to start.")
 
-        st.subheader(f"Step {STEP_1A}: market size of “{name or 'the opportunity'}” in Mexico")
-        edited_a, stats_a = _figures_step(wf, STEP_1A, name, name, researcher, fx, ref_year)
+        # ---- Step 1: exact opportunity's HS code ------------------------
+        st.header(STEP1)
+        st.caption("If the opportunity has its own HS code, its imports give the market size directly, and Steps 2 "
+                   f"and 3 are skipped. Uses {BASIS_TEXT_UI[basis]} of the latest complete year.")
+        no_exact = st.checkbox("No exact HS code exists for this opportunity", key="no_exact_hs",
+                               help="Tick this when the search only finds broader codes (for example, filled or "
+                               "compounded grades classified under the base polymer).")
+        ex_out = ex_rec = ex_tm = None
+        if no_exact:
+            st.info("No exact HS code: go to Step 2.")
+        else:
+            ex_out = trade_section(step="1", default_query=name, show_viability=False, ns="ex_",
+                                   heading="Find the exact opportunity's HS code")
+        if ex_out is not None:
+            ex_rec = mk.trade_recurrence(ex_out["summary"], ex_out["complete"], min_years)
+            ex_tm = mk.trade_market(ex_out["summary"], ex_rec.years, 1.0, basis, ex_out["unit"])
+            st.subheader("1.4 · Market size from the exact HS code")
+            _trade_size_block(ex_tm, f"HS {_codes(ex_out)}")
+        step1 = ex_tm is not None and ex_tm.found
+        if step1:
+            st.success("✅ Step 1 applies: the market size comes from the exact HS code. Steps 2 and 3 are not needed.")
+        elif ex_out is not None:
+            st.info("Step 1 can't give a market size (see above), so go to Step 2. This import data is still used "
+                    "for the recurrence check.")
+
+        # ---- Step 2: market reports --------------------------------------
+        st.header(STEP2)
+        with st.expander("Market reports", expanded=not step1):
+            if step1:
+                st.caption("Not needed: Step 1 gave the market size. Kept for reference only.")
+            edited_a, stats_a = _figures_step(wf, STEP_1A, name, name, researcher, fx, ref_year)
         current_fps = mk.log_figures(wf["register"], edited_a, STEP_1A, name)
+        step2 = not step1 and stats_a is not None and stats_a.found
+        if step1:
+            st.caption("⏭ Not needed: Step 1 gave the market size.")
+        elif step2:
+            st.success(f"✅ Step 2 applies: approximate market size {mk.fmt_size(stats_a.used, stats_a.unit)} "
+                       f"({stats_a.basis}). Step 3 is not needed for the market size.")
+        else:
+            st.info("No usable Mexico market report yet: go to Step 3.")
 
-        exact_found = stats_a is not None and stats_a.found
-        represents_exact = st.session_state.get("hs_represents", HS_BASE) == HS_EXACT
-        if exact_found:
-            st.success("Exact Mexico market size found: step 1B is not needed.")
-        with st.expander(f"Step {STEP_1B} × relevance", expanded=not exact_found):
-            if exact_found:
-                st.caption("Not used while the exact opportunity has a usable figure. Kept for reference and for "
-                           "the cross-check in tab 3.")
-            st.markdown(
-                f"When no report gives the exact opportunity's market, the **minimum market** is taken from Mexico's "
-                f"imports of the HS codes selected in tab 2 ({BASIS_TEXT_UI[basis]}, latest complete year) × relevance. "
-                "It is a floor: domestic production and value added after import only make the real market larger. "
-                "Market reports for the base material are not used.")
-            if represents_exact:
-                st.info("Tab 2's HS codes represent the exact opportunity, so no relevance split is applied "
-                        "(relevance = 1).")
-
-            st.markdown("**Relevance: how much of the base material's imports belongs to the opportunity**")
+        # ---- Step 3: base material × relevance ---------------------------
+        st.header(STEP3)
+        size_needed = not step1 and not step2
+        trade_needed = size_needed or ex_out is None  # the recurrence check needs import data
+        base_out = base_rec = base_tm = None
+        if step1:
+            st.caption("⏭ Not needed: Step 1 gave the market size and the import data.")
+        elif not size_needed:
+            st.caption("Only Step 3a is needed: the base material's imports are used for the recurrence check. "
+                       "The market size comes from Step 2, so no relevance is needed.")
+        with st.expander("Step 3a · Base material's HS code and imports", expanded=trade_needed and not step1):
+            base_out = trade_section(step="3a", default_query=base, show_viability=False, ns="base_",
+                                     heading="Find the immediate base material's HS code")
+        with st.expander("Step 3b · Relevance: how much of the base material belongs to the opportunity",
+                         expanded=size_needed):
             st.caption("Level 1 splits the base material into its broad categories; level 2 splits the "
                        "opportunity's category into its parallel products. Each defaults to an equal split "
                        "(1 / number of entries) and can be overridden.")
-            if st.button("🔎 Suggest base material, categories and parallel products with AI",
-                         disabled=researcher is None or not name, key="ai_hier"):
-                with st.spinner("Researching the product structure (usually 1–2 minutes)…"):
-                    try:
-                        res = researcher.suggest_hierarchy(name, base)
-                    except ai.AIResearchError as exc:
-                        st.error(str(exc))
-                        res = None
-                if res is not None:
-                    d = res.data
-                    wf["categories"] = pd.DataFrame({
-                        "Category": d["categories"],
-                        "Contains opportunity": [c == d.get("opportunity_category") for c in d["categories"]]})
-                    wf["products"] = pd.DataFrame({
-                        "Parallel product": d["products"],
-                        "Is the opportunity": [p == d.get("opportunity_product") for p in d["products"]]})
-                    wf["ver"]["cat"] += 1
-                    wf["ver"]["prod"] += 1
-                    wf["rationale"] = d.get("rationale", "")
-                    _log_consulted(wf, "Relevance", d.get("base_material") or base,
-                                   res.consulted + [s for s in d.get("sources", []) if isinstance(s, dict)])
-                    if d.get("base_material") and not base:
-                        st.session_state["_pending_base"] = d["base_material"]
-                    st.session_state["_flash"] = (f"AI ({d.get('mode', researcher.provider)}) suggested the product "
-                                                  "structure: review it below.")
-                    st.rerun()
-            if wf["rationale"]:
-                st.caption(f"AI rationale: {wf['rationale']}")
-
-            l1, l2 = st.columns(2)
-            with l1:
-                st.markdown(f"Level 1 · categories of {base or 'the base material'}")
-                cats = _list_editor(wf, "cat", "categories", "Category", "Contains opportunity")
-                n1 = int(cats["Category"].fillna("").astype(str).str.strip().ne("").sum())
-                r1 = _share_input("r1", n1, "r1")
-            with l2:
-                level2 = st.checkbox("Apply level 2 (parallel products)", value=True, key="level2")
-                st.markdown("Level 2 · parallel products within the opportunity's category")
-                prods = _list_editor(wf, "prod", "products", "Parallel product", "Is the opportunity")
-                n2 = int(prods["Parallel product"].fillna("").astype(str).str.strip().ne("").sum())
-                r2 = _share_input("r2", n2, "r2") if level2 else 1.0
-            relevance = mk.Relevance(n1, r1, n2, r2, level2)
-            if represents_exact:
-                st.caption(f"Relevance r1 × r2 = {relevance.combined:.4f} (not applied: HS codes are the exact "
-                           "opportunity).")
+            relevance, cats, prods, rel_set = _relevance_editor(wf, name, base, researcher)
+        if base_out is not None:
+            base_rec = mk.trade_recurrence(base_out["summary"], base_out["complete"], min_years)
+            if rel_set:
+                base_tm = mk.trade_market(base_out["summary"], base_rec.years, relevance.combined, basis,
+                                          base_out["unit"])
+        if size_needed:
+            if base_out is None:
+                st.info("Select the base material's HS codes in Step 3a and fetch the trade data.")
+            elif base_tm is None:
+                st.info("Set the relevance in Step 3b to calculate the market size.")
             else:
-                st.info(f"Combined relevance = r1 × r2 = {r1:.4f} × {r2 if level2 else 1:.4f} = "
-                        f"**{relevance.combined:.4f}**")
+                st.subheader("3c · Market size from the base material")
+                _trade_size_block(base_tm, f"{base or 'the base material'} (HS {_codes(base_out)})",
+                                  f"{relevance.combined:.4f}")
 
-        st.subheader("Market size result")
-        result_box = st.container()  # filled after tab 2, which provides the import data
+        # ---- Market size and recurrence ----------------------------------
+        market = mk.market_result(ex_tm, stats_a, base_tm, relevance if rel_set else None, ref_year)
+        if market.method == mk.BASE_HS or (market.method != mk.EXACT_HS and ex_out is None):
+            rec = base_rec
+            material = (f"{base or 'The base material'}, the immediate base material (HS {_codes(base_out)}),"
+                        if base_out is not None else "")
+        else:
+            rec = ex_rec
+            material = f"{name or 'The opportunity'} (HS {_codes(ex_out)})" if ex_out is not None else ""
 
-    # ------------------------------------------------------------------ #
-    trade_rec = None
-    trade_out = None
-    with t2:
-        st.session_state.setdefault("hs_represents", HS_BASE)
-        st.radio("The HS codes you select represent", [HS_EXACT, HS_BASE], key="hs_represents", horizontal=True)
-        st.caption("Use the exact opportunity's HS code when one exists; otherwise the base material's. Note that "
-                   "compounded and filled grades are often still classified under the base polymer's heading, so a "
-                   "base-material code usually includes the opportunity along with much else.")
-        trade_out = trade_section(step="2", default_query=base or name, show_viability=False)
-        if trade_out is not None:
-            trade_rec = mk.trade_recurrence(trade_out["summary"], trade_out["complete"], min_years)
-            st.subheader("2.4 · Recurrence over the last 5 complete years")
-            if not trade_rec.years:
-                st.warning("No complete years of trade data available.")
-            else:
-                tbl = trade_rec.table.copy()
-                tbl["imports present"] = ["✓" if v > 0 else "✗" for v in tbl["imports"]]
-                tbl["net imports positive"] = ["✓" if v > 0 else "✗" for v in tbl["net_imports"]]
-                st.dataframe(tbl.style.format({"imports": "{:,.0f}", "exports": "{:,.0f}", "net_imports": "{:,.0f}"}),
-                             width="stretch")
-                r1c, r2c, r3c = st.columns(3)
-                r1c.metric("Years with imports", f"{trade_rec.years_with_imports} of {len(trade_rec.years)}",
-                           help=f"Recurring needs at least {trade_rec.min_years}.")
-                r2c.metric("Years with positive net imports", f"{trade_rec.net_positive_years} of {len(trade_rec.years)}")
-                r3c.metric("Recurrence", trade_rec.strength)
+        st.header("Import recurrence (last 5 complete years)")
+        if rec is None:
+            st.info("Needs import data: Step 1 (exact HS code) or Step 3a (base material).")
+        elif not rec.years:
+            st.warning("No complete years of trade data available.")
+        else:
+            st.caption(f"Uses the import data of {material.rstrip(',')}.")
+            tbl = rec.table.copy()
+            tbl["imports present"] = ["✓" if v > 0 else "✗" for v in tbl["imports"]]
+            tbl["net imports positive"] = ["✓" if v > 0 else "✗" for v in tbl["net_imports"]]
+            st.dataframe(tbl.style.format({"imports": "{:,.0f}", "exports": "{:,.0f}", "net_imports": "{:,.0f}"}),
+                         width="stretch")
+            r1c, r2c, r3c = st.columns(3)
+            r1c.metric("Years with imports", f"{rec.years_with_imports} of {len(rec.years)}",
+                       help=f"Recurring needs at least {rec.min_years}.")
+            r2c.metric("Years with positive net imports", f"{rec.net_positive_years} of {len(rec.years)}")
+            r3c.metric("Recurrence", rec.strength)
 
-    # ------------------------------------------------------------------ #
-    rel_factor = 1.0 if represents_exact else relevance.combined
-    trade_mkt = (mk.trade_market(trade_out["summary"], trade_rec.years, rel_factor, basis, trade_out["unit"])
-                 if trade_rec is not None else None)
-    market = mk.market_result(stats_a, trade_mkt, None if represents_exact else relevance)
-    with result_box:
-        _market_result_block(market, trade_mkt, ref_year, represents_exact, relevance)
-
-    # ------------------------------------------------------------------ #
-    verdict = mk.recurring_demand_verdict(market, trade_rec)
-    with t3:
-        banner = {mk.ESTABLISHED: st.success, mk.NOT_ESTABLISHED: st.error, mk.PENDING: st.info}.get(
-            verdict.code, st.warning)
-        banner(f"{verdict.icon} **{verdict.headline}**  \n{verdict.detail}")
-        hs_codes = ", ".join(entry_name(e) for e in (trade_out or {}).get("basket", [])) or "–"
+        detail = mk.size_detail(market, _codes(ex_out), base)
+        verdict = mk.recurring_demand_verdict(market, rec, name, material, detail)
         evidence = [
             ("Opportunity", name or "–"),
             ("Vertical", st.session_state.get("opp_vertical", "")),
             ("Immediate base material", base or "–"),
-            ("Market size method", mk.METHOD_TEXT[market.method]),
-            ("Market size used" if market.method == "exact" else f"Minimum market size, {trade_mkt.latest_year}"
-             if market.method == "trade" else "Market size used",
-             f"{market.estimate:,.1f} {market.unit}" if market.found else "–"),
-            ("Range, min – max" + (" (last 5 complete years)" if market.method == "trade" else ""),
-             f"{market.low:,.1f} – {market.high:,.1f} {market.unit}" if market.found else "–"),
-            ("Average" + (" of the 5 years" if market.method == "trade" else " of all figures"),
-             f"{market.average_all:,.1f} {market.unit}" if market.found and market.average_all is not None else "–"),
-            ("Import basis", mk.BASIS_TEXT[basis] if market.method == "trade" else "–"),
-            ("Relevance (r1 × r2)", (f"{relevance.combined:.4f}" if not represents_exact else "1 (exact HS code)")
-             if market.method == "trade" else "–"),
-            ("HS codes", hs_codes),
-            ("HS codes represent", st.session_state.get("hs_represents", HS_BASE) if trade_out else "–"),
-            ("Trade years assessed", ", ".join(map(str, trade_rec.years)) if trade_rec and trade_rec.years else "–"),
-            ("Years with imports", f"{trade_rec.years_with_imports} of {len(trade_rec.years)}" if trade_rec else "–"),
-            ("Years with positive net imports", f"{trade_rec.net_positive_years} of {len(trade_rec.years)}"
-             if trade_rec else "–"),
-            ("Recurrence strength", trade_rec.strength if trade_rec else "–"),
+            ("Market size from", mk.METHOD_TEXT[market.method]),
+            ("Approximate market size", f"{mk.fmt_size(market.estimate, market.unit)} ({detail})"
+             if market.found else "–"),
+            ("Import basis", mk.BASIS_TEXT[basis] if market.method in (mk.EXACT_HS, mk.BASE_HS) else "–"),
+            ("Relevance (r1 × r2)", f"{relevance.combined:.4f}" if market.method == mk.BASE_HS else "–"),
+            ("Exact opportunity HS codes", "No exact HS code" if no_exact else (_codes(ex_out) or "–")),
+            ("Base material HS codes", _codes(base_out) or "–"),
+            ("Recurrence based on", material.rstrip(",") or "–"),
+            ("Trade years assessed", ", ".join(map(str, rec.years)) if rec and rec.years else "–"),
+            ("Years with imports", f"{rec.years_with_imports} of {len(rec.years)}" if rec else "–"),
+            ("Years with positive net imports", f"{rec.net_positive_years} of {len(rec.years)}" if rec else "–"),
+            ("Recurrence strength", rec.strength if rec else "–"),
         ]
-        evidence_df = pd.DataFrame(evidence, columns=["Item", "Value"])
-        st.dataframe(evidence_df, hide_index=True, width="stretch", height=36 * (len(evidence_df) + 1) + 4,
-                     column_config={"Value": st.column_config.TextColumn(width="large")})
 
-        # Cross-check (exact figures only): a report figure below the import-based minimum is suspect.
-        if market.method == "exact" and trade_mkt is not None and trade_mkt.found \
-                and market.unit == trade_mkt.unit:
-            floor, yr = trade_mkt.estimate, trade_mkt.latest_year
-            if market.estimate < floor:
-                st.warning(f"Cross-check: the exact-opportunity market used ({market.estimate:,.1f} {market.unit}) is "
-                           f"below the minimum implied by {yr} imports ({floor:,.1f} {market.unit}, "
-                           f"{mk.BASIS_TEXT[basis]} × relevance). The report figures may be too low or narrower in "
-                           "scope; consider other sources.")
-            else:
-                st.caption(f"Cross-check: the exact-opportunity market used is above the import-based minimum for "
-                           f"{yr} ({floor:,.1f} {market.unit}), as expected.")
+        with conclusion_box:
+            banner = {mk.ESTABLISHED: st.success, mk.NOT_ESTABLISHED: st.error}.get(verdict.code, st.info)
+            banner(f"### {verdict.icon} {verdict.headline}\n{verdict.detail}")
+            k1, k2, k3 = st.columns(3)
+            k1.metric("Approximate market size", mk.fmt_size(market.estimate, market.unit) if market.found else "–",
+                      help=detail or None)
+            k2.metric("Market size from", {mk.EXACT_HS: "Step 1", mk.REPORTS: "Step 2", mk.BASE_HS: "Step 3",
+                                           mk.NONE: "–"}[market.method], help=mk.METHOD_TEXT[market.method])
+            k3.metric("Years imported (last 5)", f"{rec.years_with_imports} of {len(rec.years)}"
+                      if rec and rec.years else "–")
+            with st.expander("Evidence"):
+                st.dataframe(pd.DataFrame(evidence, columns=["Item", "Value"]), hide_index=True, width="stretch",
+                             column_config={"Value": st.column_config.TextColumn(width="large")})
+            st.divider()
 
     # ------------------------------------------------------------------ #
     with t_om:
-        om_out = _open_market_tab(wf, name, base, trade_out, researcher)
+        om_out = _open_market_tab(wf, name, base, ex_out if ex_out is not None else base_out, researcher,
+                                  ex_out is not None)
 
     # ------------------------------------------------------------------ #
     with t4:
@@ -1228,18 +1271,17 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         saved = {
             "saved_at": dt.datetime.now().isoformat(timespec="seconds"),
             "opportunity": name, "vertical": st.session_state.get("opp_vertical", ""), "base_material": base,
-            "hs_represents": st.session_state.get("hs_represents", HS_BASE),
+            "no_exact_hs": no_exact,
             "figures": {STEP_1A: edited_a.to_dict("records")},
             "import_basis": basis,
-            "market": {"method": market.method, "estimate": market.estimate, "low": market.low,
-                       "high": market.high, "average": market.average_all, "unit": market.unit,
-                       "year": trade_mkt.latest_year if market.method == "trade" else None},
+            "market": {"method": market.method, "approximate_size": market.estimate, "unit": market.unit,
+                       "year": market.year, "detail": detail},
             "categories": cats.to_dict("records"),
             "products": prods.to_dict("records"),
             "rationale": wf["rationale"], "register": wf["register"], "consulted": wf["consulted"],
             "notes": wf["notes"],
-            "hs_codes": [{"digits": e.digits, "member_id": e.member_id, "code": e.code, "label": e.label,
-                          "parent_label": e.parent_label} for e in st.session_state.get("basket", {}).values()],
+            "hs_codes_exact": _basket_records("ex_basket"),
+            "hs_codes_base": _basket_records("base_basket"),
             "verdict": {"code": verdict.code, "headline": verdict.headline, "detail": verdict.detail},
             "competitors": om_out["companies"].to_dict("records"),
             "competitor_register": wf["comp_register"],
@@ -1253,13 +1295,15 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             pd.DataFrame([("Verdict", f"{verdict.icon} {verdict.headline}"), ("Detail", verdict.detail)]
                          + evidence, columns=["Item", "Value"]).to_excel(writer, sheet_name="Result", index=False)
-            edited_a.to_excel(writer, sheet_name="Figures 1A", index=False)
-            if trade_mkt is not None:
-                trade_mkt.table.to_excel(writer, sheet_name="Minimum market 1B")
+            if ex_tm is not None:
+                ex_tm.table.to_excel(writer, sheet_name="Step 1 exact HS")
+            edited_a.to_excel(writer, sheet_name="Step 2 reports", index=False)
+            if base_tm is not None:
+                base_tm.table.to_excel(writer, sheet_name="Step 3 base HS")
             cats.to_excel(writer, sheet_name="Relevance L1", index=False)
             prods.to_excel(writer, sheet_name="Relevance L2", index=False)
-            if trade_rec is not None:
-                trade_rec.table.to_excel(writer, sheet_name="Trade recurrence")
+            if rec is not None:
+                rec.table.to_excel(writer, sheet_name="Import recurrence")
             reg.drop(columns=["fingerprint"]).to_excel(writer, sheet_name="Market sources", index=False)
             omv = om_out["verdict"]
             pd.DataFrame([("Verdict", f"{omv.icon} {omv.headline}"), ("Detail", omv.detail)]
