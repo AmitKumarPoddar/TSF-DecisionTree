@@ -117,3 +117,58 @@ def test_path_b_requires_scan_and_hhi_is_note_only():
 
 def test_pending_without_trade():
     assert om.open_market_verdict(True, None, None, False, False, None).code == om.PENDING
+
+
+def _by_country(year_shares):
+    rows = []
+    for year, shares in year_shares.items():
+        for c, v in shares.items():
+            rows.append({"year": year, "flow": IMPORTS, "country": c, "value": v})
+    return pd.DataFrame(rows)
+
+
+def test_country_shares_per_year_with_other_bucket():
+    df = _by_country({2023: {"US": 50, "CN": 30, "KR": 20}, 2024: {"US": 40, "CN": 20, "KR": 20, "DE": 10, "JP": 10}})
+    sh = om.country_shares(df, [2023, 2024], top=3)
+    assert list(sh.columns) == [2023, 2024]
+    assert list(sh.index) == ["US", "CN", "KR", "Other countries"]
+    assert sh.loc["US", 2024] == pytest.approx(0.4) and sh.loc["Other countries", 2024] == pytest.approx(0.2)
+    assert sh[2023].sum() == pytest.approx(1.0)
+
+
+def test_group_names_keep_display_names():
+    df = om.companies_frame([
+        {"company": "LyondellBasell México", "group": "LyondellBasell", "include": True},
+        {"company": "LyondellBasell Industries", "group": "LyondellBasell Group", "include": True},
+        {"company": "Avient", "group": "", "include": True},
+    ])
+    assert om.group_names(df) == ["LyondellBasell", "Avient"]
+
+
+PLAIN_FORBIDDEN = ("(", ")", "—", " – ", ":")
+
+
+def test_open_market_paragraph_open_fragmented():
+    trend = _trend(om.GROWING)
+    shares = om.country_shares(_by_country({2025: {"United States": 34, "China": 22, "South Korea": 15,
+                                                   "Germany": 15, "Japan": 14}}), [2025])
+    v = om.open_market_verdict(False, trend, 4, True, False, None)
+    text = om.open_market_paragraph(v, trend, shares, ["A", "B", "C", "D"], "MFPP", "polypropylene, the base "
+                                    "material of MFPP", False, True)
+    assert text.startswith("Yes, the market for MFPP in Mexico is open for a new supplier.")
+    assert "imports of polypropylene, the base material of MFPP, have increased by about" in text and "a year between 2021 and 2025" in text
+    assert "fragmented across multiple countries, such as United States with 34%, China with 22% and" in text
+    assert "Many manufacturers, such as A, B, C and D, supply MFPP" in text
+    assert not any(ch in text for ch in PLAIN_FORBIDDEN), text
+
+
+def test_open_market_paragraph_concentrated_and_not_open():
+    trend = _trend(om.DECLINING)
+    shares = om.country_shares(_by_country({2025: {"United States": 85, "China": 15}}), [2025])
+    v = om.open_market_verdict(True, trend, None, False, False, None)
+    text = om.open_market_paragraph(v, trend, shares, [], "MFPP", "MFPP", True, False)
+    assert text.startswith("No, the market for MFPP in Mexico is not open for a new supplier.")
+    assert "have decreased by about" in text
+    assert "concentrated, with United States alone supplying 85%" in text
+    assert text.endswith("This is not a good signal to enter the market.")
+    assert not any(ch in text for ch in PLAIN_FORBIDDEN), text

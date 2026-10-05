@@ -151,6 +151,29 @@ def hhi_series(by_country: pd.DataFrame | None, years: Sequence[int]) -> HHISeri
                      float(table["hhi"].iloc[0]) if len(table) else None)
 
 
+def country_shares(by_country: pd.DataFrame | None, years: Sequence[int], top: int = 6) -> pd.DataFrame:
+    """Share of Mexico's imports by origin country, per year (rows: countries, columns: years).
+
+    Countries outside the ``top`` of the latest year are grouped as "Other countries".
+    """
+    if by_country is None or by_country.empty or not years:
+        return pd.DataFrame()
+    imp = by_country[(by_country["flow"] == IMPORTS) & (by_country["year"].isin(list(years)))]
+    if imp.empty:
+        return pd.DataFrame()
+    pivot = imp.pivot_table(index="country", columns="year", values="value", aggfunc="sum").fillna(0.0)
+    pivot = pivot[[y for y in years if y in pivot.columns]]
+    shares = pivot / pivot.sum(axis=0).replace(0, np.nan)
+    order = shares.iloc[:, -1].fillna(0).sort_values(ascending=False).index
+    shares = shares.loc[order]
+    if len(shares) > top:
+        rest = shares.iloc[top:].sum(axis=0)
+        shares = shares.iloc[:top]
+        shares.loc["Other countries"] = rest
+    shares.index.name = "country"
+    return shares
+
+
 # --------------------------------------------------------------------------- #
 # Competitors
 # --------------------------------------------------------------------------- #
@@ -190,6 +213,20 @@ def group_key(company, group) -> str:
         name = str(company or "").strip()
     name = _SUFFIX.sub(" ", name.lower())
     return re.sub(r"[^a-z0-9]+", " ", name).strip()
+
+
+def group_names(df: pd.DataFrame) -> list[str]:
+    """Display name of each distinct included group: the group as written, else the company."""
+    seen, out = set(), []
+    for row in df.itertuples(index=False):
+        if not bool(row.include) or not str(row.company or "").strip() or str(row.company) == "nan":
+            continue
+        key = group_key(row.company, row.group)
+        if key and key not in seen:
+            seen.add(key)
+            g = str(row.group or "").strip()
+            out.append(g if g and g.lower() not in ("nan", "none") else str(row.company).strip())
+    return out
 
 
 def distinct_groups(df: pd.DataFrame) -> list[str]:
@@ -292,3 +329,87 @@ def open_market_verdict(exact_hs: bool, trend: ImportTrend | None, n_groups: int
                                  notes)
     return OpenMarketVerdict(WATCH, "⚠️", "Concentrated and shrinking market",
                              f"Only {n} competitor group(s); {base}.", notes)
+
+
+# --------------------------------------------------------------------------- #
+# Conclusion paragraph (plain English, ready to paste)
+# --------------------------------------------------------------------------- #
+def join_names(names: Sequence[str]) -> str:
+    names = [n for n in names if n]
+    if len(names) <= 1:
+        return "".join(names)
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _pct(x: float) -> str:
+    v = abs(x) * 100
+    return f"{v:.0f}%" if v >= 10 else f"{v:.1f}%"
+
+
+def open_market_paragraph(verdict: OpenMarketVerdict, trend: ImportTrend | None, shares: pd.DataFrame,
+                          companies: Sequence[str], opportunity: str, material: str, exact_hs: bool,
+                          scan_done: bool, none_confirmed: bool = False) -> str:
+    """The open-market conclusion as one plain paragraph, without brackets, dashes or colons."""
+    opp = opportunity or "the opportunity"
+    if verdict.code == OPEN:
+        out = [f"Yes, the market for {opp} in Mexico is open for a new supplier."]
+    elif verdict.code in (NOT_OPEN, NO_MARKET):
+        out = [f"No, the market for {opp} in Mexico is not open for a new supplier."]
+    elif verdict.code == WATCH:
+        out = [f"The market for {opp} in Mexico may be open for a new supplier, but it needs a closer look "
+               "before entering."]
+    else:
+        out = [f"The open market check for {opp} in Mexico is not complete yet."]
+
+    if trend is not None and trend.years:
+        y0, y1 = trend.years[0], trend.years[-1]
+        what = f"Mexico's imports of {material}" + ("," if not exact_hs else "")
+        cls = trend.classification
+        if cls == NO_IMPORTS:
+            out.append(f"Mexico recorded no imports of {material}{'' if exact_hs else ','} between {y0} and {y1}.")
+        elif cls == GROWING:
+            out.append(f"{what} have increased by about {_pct(trend.slope_pct)} a year between {y0} and {y1}.")
+        elif cls == DECLINING:
+            out.append(f"{what} have decreased by about {_pct(trend.slope_pct)} a year between {y0} and {y1}.")
+        else:
+            out.append(f"{what} have remained broadly stable between {y0} and {y1}.")
+
+    if shares is not None and not shares.empty:
+        year = shares.columns[-1]
+        latest = shares[year].drop("Other countries", errors="ignore").dropna()
+        latest = latest[latest > 0]
+        if len(latest):
+            hhi = float(((shares[year].fillna(0)) ** 2).sum() * 10000)
+            named = [f"{c} with {_pct(v)}" for c, v in latest.head(3).items()]
+            if len(latest) == 1 or latest.iloc[0] >= 0.5 or hhi > 2500:
+                if latest.iloc[0] >= 0.5:
+                    out.append(f"The imports are concentrated, with {latest.index[0]} alone supplying "
+                               f"{_pct(latest.iloc[0])} of the total in {year}.")
+                else:
+                    out.append(f"The imports are concentrated in a few countries, mainly {join_names(named)} "
+                               f"in {year}.")
+            else:
+                out.append(f"The imports are fragmented across multiple countries, such as {join_names(named)} "
+                           f"in {year}.")
+
+    names = list(companies)
+    shown = join_names(names[:6])
+    if names and len(names) >= MIN_COMPETITORS:
+        out.append(f"Many manufacturers, such as {shown}, supply {opp} in the Mexican market, which validates "
+                   "the fragmentation of the market and is a good signal to enter it.")
+    elif names:
+        out.append(f"Only a few manufacturers, such as {shown}, supply {opp} in the Mexican market, so the supply "
+                   "is concentrated in a few hands.")
+    elif scan_done and none_confirmed:
+        out.append(f"No manufacturer supplying {opp} in the Mexican market could be found, which means there is "
+                   "no market for it in Mexico yet.")
+    elif not exact_hs:
+        out.append(f"The manufacturers supplying {opp} in the Mexican market still need to be confirmed.")
+
+    if verdict.code == OPEN and not (names and len(names) >= MIN_COMPETITORS):
+        out.append("Overall, this is a good signal to enter the market.")
+    elif verdict.code == WATCH and trend is not None and trend.classification == DECLINING:
+        out.append("As the imports are shrinking, entry should be weighed carefully.")
+    elif verdict.code in (NOT_OPEN, NO_MARKET):
+        out.append("This is not a good signal to enter the market.")
+    return " ".join(out)

@@ -453,37 +453,73 @@ def size_detail(market: MarketResult, codes: str = "", base: str = "") -> str:
     return ""
 
 
+_NUM = {1: "one", 2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight", 9: "nine",
+        10: "ten"}
+
+
+def _words(n: int) -> str:
+    return _NUM.get(n, str(n))
+
+
+def size_words(value: float, unit: str) -> str:
+    """'USD 97 million', 'USD 2.2 billion' (no abbreviations, for plain text)."""
+    if unit == "USD million":
+        if value >= 1000:
+            return f"USD {value / 1000:,.1f} billion"
+        return f"USD {value:,.0f} million" if value >= 10 else f"USD {value:,.1f} million"
+    return f"{value:,.1f} {unit}"
+
+
 def recurring_demand_verdict(market: MarketResult, trade: TradeRecurrence | None, opportunity: str = "",
-                             material: str = "", detail: str = "") -> Verdict:
+                             material: str = "", base_material: bool = False) -> Verdict:
     """Yes = an approximate market size from steps 1–3 AND imports in at least ``min_years`` of the last 5.
 
-    ``material`` names what the import data covers (the opportunity's HS code or its base material);
-    ``detail`` is :func:`size_detail`.
+    ``detail`` of the result is one plain-English paragraph (no brackets, dashes or colons), ready to paste.
+    ``material`` names the material whose imports were checked; ``base_material`` says it is the
+    opportunity's immediate base material rather than the opportunity itself.
     """
     opp = opportunity or "the opportunity"
-    material = material or "The material"
     if trade is None or not trade.years:
         return Verdict(PENDING, "⏳", "Pending: import data needed",
-                       "Fetch the import data in Step 1 (exact HS code) or Step 3 (base material) to conclude.")
+                       "Fetch the import data in Step 1 for the exact HS code, or in Step 3a for the base material, "
+                       "to conclude.")
     n, k, m = len(trade.years), trade.years_with_imports, trade.net_positive_years
-    span = f"{trade.years[0]}–{trade.years[-1]}" if n > 1 else str(trade.years[0])
-    imports = (f"{material} has been imported in {k} of the last {n} complete years ({span}) "
-               f"and net imported in {m} of them")
-    if m < n:
-        imports += f"; Mexico was a net exporter in {n - m} of the {n} years (exports exceeded imports)"
+    y0, y1 = trade.years[0], trade.years[-1]
+    if base_material:
+        who = f"{material or 'Its immediate base material'}, the immediate base material used for {opp},"
+    else:
+        who = opp[:1].upper() + opp[1:]
+    years_txt = (f"in all of the last {_words(n)} years, from {y0} to {y1}" if k == n
+                 else f"in {_words(k)} of the last {_words(n)} years, from {y0} to {y1}")
+    if m == n:
+        net_txt = "and Mexico has been a net importer in each of those years"
+    elif m == 0:
+        net_txt = "but Mexico exported more than it imported in each of those years"
+    else:
+        net_txt = (f"and Mexico was a net importer in {_words(m)} of those years and a net exporter in the "
+                   f"other {_words(n - m)}")
+    imports = f"{who} has been imported into Mexico {years_txt}, {net_txt}."
+    size = (f"The market size is approximately {size_words(market.estimate, market.unit)}"
+            + (f" as of {market.year}." if market.year else ".")) if market.found else ""
+
     if market.found and trade.recurring:
-        return Verdict(ESTABLISHED, "✅", f"Yes — the demand for {opp} in Mexico is recurring",
-                       f"Approximate market size: {fmt_size(market.estimate, market.unit)} ({detail}). {imports}.")
-    reasons = []
+        close = ("This steady import record shows a consistent demand for it in Mexico." if k == n
+                 else "This regular import record shows a consistent demand for it in Mexico.")
+        text = " ".join([f"Yes, the demand for {opp} in Mexico is recurring.", size, imports, close])
+        return Verdict(ESTABLISHED, "✅", f"Yes, the demand for {opp} in Mexico is recurring", text)
+
+    parts = [f"No, the recurring demand for {opp} in Mexico could not be established."]
+    if market.found:
+        parts.append(size)
+    else:
+        parts.append(f"No market size could be found for {opp} from import data or market reports.")
     if not trade.recurring:
-        reasons.append(f"{material} was imported in only {k} of the last {n} complete years "
-                       f"(at least {trade.min_years} needed)")
-    if not market.found:
-        reasons.append("no market size could be found in Steps 1–3")
-    size = (f" Approximate market size: {fmt_size(market.estimate, market.unit)} ({detail})."
-            if market.found else "")
-    return Verdict(NOT_ESTABLISHED, "❌", f"No — {NOT_ESTABLISHED_TEXT}",
-                   "Reason: " + "; and ".join(reasons) + "." + size + f" {imports}.")
+        parts.append(f"{who} has been imported into Mexico in only {_words(k)} of the last {_words(n)} years, from "
+                     f"{y0} to {y1}, which is not enough to show a recurring demand.")
+    else:
+        parts.append(imports)
+    return Verdict(NOT_ESTABLISHED, "❌", f"No, the recurring demand for {opp} in Mexico could not be established",
+                   " ".join(parts))
 
 
 # --------------------------------------------------------------------------- #

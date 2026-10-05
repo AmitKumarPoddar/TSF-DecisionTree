@@ -41,6 +41,8 @@ The three steps in tab 1:
 
 How the open-market check works (tab 2):
 - **Import trend.** Uses the HS codes from tab 1 (the exact code from Step 1 if fetched, otherwise the base material's from Step 3a) and the last 5 complete years. It uses volume when the cube has a quantity measure, otherwise value. The trend is a Theil–Sen line (the median of all pairwise slopes), so a single spike year can't decide it. Above +2%/yr is **Growing**, −2% to +2% is **Stable**, below −2% is **Declining**.
+- **Conclusion paragraph.** Both tabs open with a plain-English conclusion (no brackets, dashes or colons), with a "Copy as plain text (for Excel)" box. The open-market paragraph covers the Yes/No result, the yearly import change, how the imports are spread across countries, and the manufacturers found.
+- **Import origins.** The share of Mexico's imports from each country, per year, for the top countries of the latest year (the rest are grouped as Other countries). Also exported to Excel.
 - **HHI by year.** Supplier-country concentration with its 5-year direction. It is a note only and never changes the result.
 - **Competitors.** Companies, domestic or international, that supply the *exact opportunity* in Mexico. Companies that only sell the base material are not counted. Subsidiaries of one group count once. 4 or more groups means the market is fragmented.
 

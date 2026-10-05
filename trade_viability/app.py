@@ -839,11 +839,21 @@ def _load_quantity(base_url_: str, cube: str, keys: tuple, measure: str, locale_
     return df
 
 
+def _conclusion_box(code_style, text: str) -> None:
+    """A coloured conclusion paragraph plus a copy-ready plain-text version."""
+    code_style(text)
+    with st.expander("Copy as plain text (for Excel)"):
+        st.code(text, language=None, wrap_lines=True)
+
+
 def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher, exact_hs: bool) -> dict:
-    """Open-market check: import trend, HHI, competitor scan and verdict."""
+    """Open-market check: conclusion, import trend, HHI, import origins, competitor scan and verdict."""
     mode_ = theme_mode()
-    out = {"verdict": None, "evidence": [], "trend_table": None, "hhi_table": None, "comp_fps": [],
-           "companies": om.empty_companies()}
+    out = {"verdict": None, "evidence": [], "trend_table": None, "hhi_table": None, "shares": None,
+           "comp_fps": [], "companies": om.empty_companies(), "paragraph": ""}
+    concl = st.container()  # filled at the end, once every check has run
+    material = (name or "the opportunity") if exact_hs else \
+        f"{base or 'the base material'}, the base material of {name or 'the opportunity'}"
     st.caption("Uses the HS codes from tab 1 (the exact opportunity's if Step 1 has them, otherwise the base "
                "material's). "
                + ("They are the **exact opportunity's** codes: imports alone decide the result; the competitor scan "
@@ -902,8 +912,21 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher, exac
             st.caption(hhi.note + " HHI never changes the pass/fail result.")
             out["hhi_table"] = hhi.table
 
+    # ---- Import origins by country ------------------------------------------
+    st.subheader("2.3 · Where the imports come from: share by country, each year")
+    shares = pd.DataFrame()
+    if trade_out is not None and trend is not None and trend.years:
+        shares = om.country_shares(trade_out.get("by_country"), trend.years)
+    if shares.empty:
+        st.info("No partner-country breakdown available for these codes.")
+    else:
+        st.dataframe(shares.style.format(lambda v: "–" if pd.isna(v) else f"{v:.1%}"), width="stretch")
+        st.caption("Share of Mexico's imports by origin country. The top countries of the latest year are listed; "
+                   "the rest are grouped as Other countries.")
+        out["shares"] = shares
+
     # ---- Step 3: competitors ----------------------------------------------
-    st.subheader("2.3 · Competitors supplying the exact opportunity in Mexico"
+    st.subheader("2.4 · Competitors supplying the exact opportunity in Mexico"
                  + (" (optional)" if exact_hs else " (required)"))
     st.caption(f"Any domestic or international company selling **{name or 'the opportunity'}** in Mexico counts; "
                "companies selling only the base material do not. Subsidiaries of one group count once; "
@@ -954,7 +977,7 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher, exac
         st.session_state["om_none_confirmed"] = False
 
     # ---- Step 4: verdict ---------------------------------------------------
-    st.subheader("2.4 · Open-market result")
+    st.subheader("2.5 · Open-market result")
     verdict = om.open_market_verdict(exact_hs, trend, n if wf["comp_scan_done"] else None, wf["comp_scan_done"],
                                      none_confirmed, hhi, name or "the opportunity")
     banner = {om.OPEN: st.success, om.NOT_OPEN: st.error, om.NO_MARKET: st.error, om.PENDING: st.info}.get(
@@ -969,11 +992,17 @@ def _open_market_tab(wf: dict, name: str, base: str, trade_out, researcher, exac
          f"{trend.measure}, {trend.years[0] if trend.years else ''}–{trend.years[-1] if trend.years else ''})"),
         ("HHI (latest)", "–" if hhi is None or hhi.latest is None else f"{hhi.latest:,.0f}, {hhi.direction}"),
         ("Competitor groups", str(n) + ("" if wf["comp_scan_done"] else " (scan not run)")),
-        ("Groups counted", ", ".join(groups) or "–"),
+        ("Groups counted", ", ".join(om.group_names(edited)) or "–"),
     ]
     st.dataframe(pd.DataFrame(evidence, columns=["Item", "Value"]), hide_index=True, width="stretch",
                  column_config={"Value": st.column_config.TextColumn(width="large")})
-    out.update(verdict=verdict, evidence=evidence)
+    paragraph = om.open_market_paragraph(verdict, trend, shares, om.group_names(edited), name or "the opportunity",
+                                         material, exact_hs, wf["comp_scan_done"], none_confirmed)
+    with concl:
+        _conclusion_box({om.OPEN: st.success, om.NOT_OPEN: st.error, om.NO_MARKET: st.error,
+                         om.PENDING: st.info}.get(verdict.code, st.warning), paragraph)
+        st.divider()
+    out.update(verdict=verdict, evidence=evidence, paragraph=paragraph)
     return out
 
 BASIS_TEXT_UI = {mk.NET: "net imports = imports − exports", mk.GROSS: "gross imports"}
@@ -1174,11 +1203,10 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         # ---- Market size and recurrence ----------------------------------
         market = mk.market_result(ex_tm, stats_a, base_tm, relevance if rel_set else None, ref_year)
         if market.method == mk.BASE_HS or (market.method != mk.EXACT_HS and ex_out is None):
-            rec = base_rec
-            material = (f"{base or 'The base material'}, the immediate base material (HS {_codes(base_out)}),"
-                        if base_out is not None else "")
+            rec, rec_is_base = base_rec, True
+            material = f"{base or 'The base material'} (HS {_codes(base_out)})" if base_out is not None else ""
         else:
-            rec = ex_rec
+            rec, rec_is_base = ex_rec, False
             material = f"{name or 'The opportunity'} (HS {_codes(ex_out)})" if ex_out is not None else ""
 
         st.header("Import recurrence (last 5 complete years)")
@@ -1187,7 +1215,7 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         elif not rec.years:
             st.warning("No complete years of trade data available.")
         else:
-            st.caption(f"Uses the import data of {material.rstrip(',')}.")
+            st.caption(f"Uses the import data of {material}.")
             tbl = rec.table.copy()
             tbl["imports present"] = ["✓" if v > 0 else "✗" for v in tbl["imports"]]
             tbl["net imports positive"] = ["✓" if v > 0 else "✗" for v in tbl["net_imports"]]
@@ -1200,7 +1228,7 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             r3c.metric("Recurrence", rec.strength)
 
         detail = mk.size_detail(market, _codes(ex_out), base)
-        verdict = mk.recurring_demand_verdict(market, rec, name, material, detail)
+        verdict = mk.recurring_demand_verdict(market, rec, name, base if rec_is_base else name, rec_is_base)
         evidence = [
             ("Opportunity", name or "–"),
             ("Vertical", st.session_state.get("opp_vertical", "")),
@@ -1212,7 +1240,7 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             ("Relevance (r1 × r2)", f"{relevance.combined:.4f}" if market.method == mk.BASE_HS else "–"),
             ("Exact opportunity HS codes", "No exact HS code" if no_exact else (_codes(ex_out) or "–")),
             ("Base material HS codes", _codes(base_out) or "–"),
-            ("Recurrence based on", material.rstrip(",") or "–"),
+            ("Recurrence based on", material or "–"),
             ("Trade years assessed", ", ".join(map(str, rec.years)) if rec and rec.years else "–"),
             ("Years with imports", f"{rec.years_with_imports} of {len(rec.years)}" if rec else "–"),
             ("Years with positive net imports", f"{rec.net_positive_years} of {len(rec.years)}" if rec else "–"),
@@ -1220,8 +1248,8 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
         ]
 
         with conclusion_box:
-            banner = {mk.ESTABLISHED: st.success, mk.NOT_ESTABLISHED: st.error}.get(verdict.code, st.info)
-            banner(f"### {verdict.icon} {verdict.headline}\n{verdict.detail}")
+            _conclusion_box({mk.ESTABLISHED: st.success, mk.NOT_ESTABLISHED: st.error}.get(verdict.code, st.info),
+                            verdict.detail)
             k1, k2, k3 = st.columns(3)
             k1.metric("Approximate market size", mk.fmt_size(market.estimate, market.unit) if market.found else "–",
                       help=detail or None)
@@ -1288,12 +1316,12 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
             "competitor_scan_done": wf["comp_scan_done"],
             "no_supplier_confirmed": bool(st.session_state.get("om_none_confirmed", False)),
             "open_market_verdict": {"code": om_out["verdict"].code, "headline": om_out["verdict"].headline,
-                                    "detail": om_out["verdict"].detail},
+                                    "detail": om_out["verdict"].detail, "conclusion": om_out["paragraph"]},
         }
         stem = "".join(ch if ch.isalnum() else "_" for ch in (name or "opportunity"))[:50]
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            pd.DataFrame([("Verdict", f"{verdict.icon} {verdict.headline}"), ("Detail", verdict.detail)]
+            pd.DataFrame([("Verdict", verdict.headline), ("Conclusion", verdict.detail)]
                          + evidence, columns=["Item", "Value"]).to_excel(writer, sheet_name="Result", index=False)
             if ex_tm is not None:
                 ex_tm.table.to_excel(writer, sheet_name="Step 1 exact HS")
@@ -1306,11 +1334,13 @@ def recurring_demand_workflow(researcher, fx: dict, ref_year: int, min_years: in
                 rec.table.to_excel(writer, sheet_name="Import recurrence")
             reg.drop(columns=["fingerprint"]).to_excel(writer, sheet_name="Market sources", index=False)
             omv = om_out["verdict"]
-            pd.DataFrame([("Verdict", f"{omv.icon} {omv.headline}"), ("Detail", omv.detail)]
+            pd.DataFrame([("Verdict", omv.headline), ("Conclusion", om_out["paragraph"]), ("Detail", omv.detail)]
                          + [("Note", n) for n in omv.notes] + om_out["evidence"],
                          columns=["Item", "Value"]).to_excel(writer, sheet_name="Open market", index=False)
             if om_out["trend_table"] is not None:
                 om_out["trend_table"].to_excel(writer, sheet_name="Import trend", index=False)
+            if om_out["shares"] is not None:
+                om_out["shares"].to_excel(writer, sheet_name="Import origin shares")
             if om_out["hhi_table"] is not None and not om_out["hhi_table"].empty:
                 om_out["hhi_table"].to_excel(writer, sheet_name="HHI by year", index=False)
             om_out["companies"].to_excel(writer, sheet_name="Competitors", index=False)

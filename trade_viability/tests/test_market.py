@@ -130,6 +130,9 @@ def test_trade_not_recurring():
     assert not t.recurring and t.strength == "Not recurring"
 
 
+PLAIN_FORBIDDEN = ("(", ")", "—", " – ", ":")
+
+
 @pytest.mark.parametrize("market_found,recurring,code", [
     (True, True, m.ESTABLISHED),
     (True, False, m.NOT_ESTABLISHED),
@@ -139,25 +142,31 @@ def test_trade_not_recurring():
 def test_verdict_matrix(market_found, recurring, code):
     market = m.MarketResult(m.REPORTS if market_found else m.NONE, 120.0 if market_found else None,
                             "USD million", 2025)
-    s = _summary([10] * 5 if recurring else [0] * 5, [0] * 5)
+    s = _summary([10] * 5 if recurring else [0, 0, 0, 10, 10], [0] * 5)
     v = m.recurring_demand_verdict(market, m.trade_recurrence(s, list(range(2019, 2024))), "MFPP",
-                                   "Polypropylene", "2025, average of 3 market reports")
+                                   "Polypropylene", base_material=True)
     assert v.code == code
+    assert not any(ch in v.detail for ch in PLAIN_FORBIDDEN), v.detail
     if code == m.ESTABLISHED:
-        assert v.headline == "Yes — the demand for MFPP in Mexico is recurring"
-        assert "Approximate market size: USD 120.0 m (2025, average of 3 market reports)" in v.detail
-        assert "imported in 5 of the last 5 complete years (2019–2023) and net imported in 5" in v.detail
+        assert v.detail.startswith("Yes, the demand for MFPP in Mexico is recurring.")
+        assert "approximately USD 120 million as of 2025" in v.detail
+        assert ("Polypropylene, the immediate base material used for MFPP, has been imported into Mexico in all "
+                "of the last five years, from 2019 to 2023, and Mexico has been a net importer") in v.detail
     else:
-        assert v.headline == "No — The recurring demand could not be established."
+        assert v.detail.startswith("No, the recurring demand for MFPP in Mexico could not be established.")
     if not market_found:
-        assert "no market size could be found in Steps 1–3" in v.detail
+        assert "No market size could be found" in v.detail
+    if not recurring:
+        assert "in only two of the last five years" in v.detail
 
 
 def test_verdict_mentions_net_exports():
-    market = m.MarketResult(m.REPORTS, 120.0, "USD million", 2025)
+    market = m.MarketResult(m.EXACT_HS, 2157.4, "USD million", 2024)
     s = _summary([10] * 5, [5, 20, 20, 5, 5])
-    v = m.recurring_demand_verdict(market, m.trade_recurrence(s, list(range(2019, 2024))), "MFPP", "PP", "d")
-    assert v.code == m.ESTABLISHED and "net exporter in 2 of the 5 years" in v.detail
+    v = m.recurring_demand_verdict(market, m.trade_recurrence(s, list(range(2019, 2024))), "mineral-filled PP")
+    assert v.code == m.ESTABLISHED and "net importer in three of those years and a net exporter in the other two" \
+        in v.detail
+    assert "Mineral-filled PP has been imported" in v.detail and "USD 2.2 billion as of 2024" in v.detail
 
 
 def test_size_detail_and_format():
